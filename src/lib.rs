@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use std::fmt::Debug;
 use rand_distr::{Normal, Uniform};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use ordered_float::OrderedFloat;
@@ -63,7 +64,6 @@ mod tests {
     ) -> System {
 
         let data_vec = vec![0.0, 0.0];
-        let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
 
         System::new(
             n_particles,
@@ -88,7 +88,6 @@ mod tests {
     ) -> Optimizer {
 
         let T = 2.0;
-        let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
         //let mut rng = thread_rng();
         let particle = Optimizer::new(
             data_vec.to_vec(),
@@ -98,7 +97,6 @@ mod tests {
             T,
             *step,
             method,
-            rng,
         );
         particle
     }
@@ -125,8 +123,8 @@ mod tests {
         let up = vec![5.0, 5.0];
         let mut particle = set_up_particle(&start_data, &step, &low, &up, &himmelblau, &Method::SimulatedAnnealing);
 
-        let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
-        particle.perturb(rng);
+        //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
+        particle.perturb();
         // particle should have started at [0.0,0.0], and should not have moved
         // with step of 0.0
         particle.position.iter()
@@ -138,7 +136,7 @@ mod tests {
         let low = vec![-5.0, -5.0];
         let up = vec![5.0, 5.0];
         let mut particle = set_up_particle(&start_data, &step, &low, &up, &himmelblau, &Method::SimulatedAnnealing);
-        particle.perturb(rng);
+        particle.perturb();
         // particle should end NOT at [1.0,1.0], so the sums should differ
         assert_ne!(
             particle.position.iter().sum::<f64>(),
@@ -150,7 +148,6 @@ mod tests {
     fn test_velocity_only() {
         // Here we test that stepsize 0.0 and velocity [1.0, 1.0] moves particle
         // directionally
-        let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
         let start_data = vec![0.0, 0.0];
         let step = 0.0;
         let inertia = 1.0;
@@ -169,7 +166,6 @@ mod tests {
             &local_weight,
             &global_weight,
             &global_best,
-            rng,
         );
         // particle velocity should have changed
         particle.velocity.iter()
@@ -177,7 +173,7 @@ mod tests {
             .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
         // move the particle
         println!("Position prior to move: {:?}", &particle.position);
-        particle.perturb(rng);
+        particle.perturb();
         // particle should have moved in direction of velocity, but magnitude will
         //  be random
         particle.position.iter()
@@ -285,14 +281,13 @@ impl Optimizer {
         temperature: f64,
         stepsize: f64,
         method: &Method,
-        rng: Arc<Mutex<Xoshiro256PlusPlus>>,
     ) -> Optimizer {
 
+        let mut init_rng = Xoshiro256PlusPlus::from_entropy();
         // initialize velocity for each parameter to zero
         let mut v = vec![0.0; data.len()];
         // adjust the starting velocity if we're doing particle swarm
         //let mut rng = thread_rng();
-        let mut lrng = rng.lock().unwrap();
         match method {
             Method::ParticleSwarm => {
                 v.iter_mut()
@@ -301,7 +296,7 @@ impl Optimizer {
                     .for_each(|((vel, low), up)| {
                         // draw velocities from uniform dist from +/-(range/40)
                         let init_range = (up - low) / 40.0;
-                        let nudge = lrng.gen_range(-init_range..init_range);
+                        let nudge = init_rng.gen_range(-init_range..init_range);
                         *vel = *vel + nudge;
                 });
             }
@@ -311,6 +306,9 @@ impl Optimizer {
         // copy of data to place something into prior_position
         let d = data.to_vec();
         let pr = data.to_vec();
+
+        //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
+        let rng = Xoshiro256PlusPlus::from_entropy();
         let mut particle = Optimizer {
             position: data,
             prior_position: d,
@@ -323,6 +321,7 @@ impl Optimizer {
             velocity: v,
             prior_velocity: pv,
             stepsize: stepsize,
+            rng: rng,
         };
         particle.score = particle.evaluate( objective );
         particle.best_score = particle.score;
@@ -335,12 +334,12 @@ impl Optimizer {
 /// any struct
 pub trait Particle {
     fn evaluate(&self, objective: &dyn Fn(&Vec<f64>) -> f64) -> f64;
-    fn perturb(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>);
-    fn choose_param_index(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> usize;
-    fn get_jitter(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> f64;
+    fn perturb(&mut self);
+    fn choose_param_index(&mut self) -> usize;
+    fn get_jitter(&mut self) -> f64;
     fn set_velocity(&mut self, inertia: &f64,
             local_weight: &f64, global_weight: &f64,
-            global_best_position: &Vec<f64>, rng: Arc<Mutex<Xoshiro256PlusPlus>>);
+            global_best_position: &Vec<f64>);
     fn step(
             &mut self,
             objective: &dyn Fn(&Vec<f64>) -> f64,
@@ -351,11 +350,10 @@ pub trait Particle {
             t_adj: &f64,
             method: &Method,
             accept_from_logit: &bool,
-            rng: Arc<Mutex<Xoshiro256PlusPlus>>,
     );
     fn update_scores(&mut self, score: &f64);
     fn revert(&mut self);
-    fn accept(&mut self, score: &f64, accept_from_logit: &bool, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> bool;
+    fn accept(&mut self, score: &f64, accept_from_logit: &bool) -> bool;
     fn adjust_temp(&mut self, t_adj: &f64);
 }
 
@@ -385,6 +383,7 @@ macro_rules! add_particle_impl {
             velocity: Vec<f64>,
             prior_velocity: Vec<f64>,
             stepsize: f64,
+            rng: Xoshiro256PlusPlus,
         }
 
         impl Particle for $struct_name {
@@ -407,16 +406,16 @@ macro_rules! add_particle_impl {
             /// Complementary to that, if you want only the velocity to affect particle
             /// position, but no random jitter, set stepsize to 0.0.
             /// Modifies self.position in place.
-            fn perturb(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>) {
+            fn perturb(&mut self) {
 
                 // before we change the position, set prior position to current position
                 // this will enable reversion to prior state if we later reject the move
                 self.prior_position = self.position.to_vec();
 
                 // which index will we be nudging?
-                let idx = self.choose_param_index(rng);
+                let idx = self.choose_param_index();
                 // by how far will we nudge?
-                let jitter = self.get_jitter(rng);
+                let jitter = self.get_jitter();
 
                 // nudge the randomly chosen index by jitter
                 self.position[idx] += jitter;
@@ -432,42 +431,40 @@ macro_rules! add_particle_impl {
             }
 
             /// Randomly chooses the index of position to update using jitter
-            fn choose_param_index(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> usize {
-                let mut lrng = rng.lock().unwrap();
+            fn choose_param_index(&mut self) -> usize {
                 let die = Uniform::new(0, self.position.len());
-                die.sample(&mut *lrng)
+                die.sample(&mut self.rng)
             }
 
             /// Sample once from a normal distribution with a mean of 0.0 and std dev
             /// of self.stepsize.
-            fn get_jitter(&mut self, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> f64 {
+            fn get_jitter(&mut self) -> f64 {
                 // sample from normal distribution one time
                 /////////////////////////////////////////////////////
                 // Keep this self.rng.lock().unrwrap() for now. the argmin people use it
                 // They say it's necessary for thread-safe optims
                 /////////////////////////////////////////////////////
-                let mut lrng = rng.lock().unwrap();
 
                 /////////////////////////////////////////////////////
                 // I keep wanting to make thist distr a field of Particle, but shouldn't:
                 // I want to be able to update stepsize as optimization proceeds
                 /////////////////////////////////////////////////////
                 let jitter_distr = Normal::new(0.0, self.stepsize).unwrap();
-                jitter_distr.sample(&mut *lrng)
+                jitter_distr.sample(&mut self.rng)
             }
 
             /// Set the velocity of the Particle
             fn set_velocity(&mut self, inertia: &f64,
                     local_weight: &f64, global_weight: &f64,
-                    global_best_position: &Vec<f64>, rng: Arc<Mutex<Xoshiro256PlusPlus>>) {
+                    global_best_position: &Vec<f64>) {
                  
-                let mut lrng = rng.lock().unwrap();
+                //let mut lrng = rng.lock().unwrap();
                 // before we change the velocity, set prior velocity to current velocity
                 // this will enable reversion to prior state if we later reject the move
                 self.prior_velocity = self.velocity.to_vec();
                 // set stochastic element of weights applied to local and global best pos
                 // self.rng.gen samples from [0.0, 1.0)
-                let r_arr: [f64; 2] = lrng.gen();
+                let r_arr: [f64; 2] = self.rng.gen();
                 // set the new velocity
                 self.velocity.iter_mut() // mutably iterate over current velocity
                     .zip(&self.best_position) // in lockstep with this Particle's best position
@@ -501,7 +498,7 @@ macro_rules! add_particle_impl {
                     t_adj: &f64,
                     method: &Method,
                     accept_from_logit: &bool,
-                    rng: Arc<Mutex<Xoshiro256PlusPlus>>
+                    //rng: Arc<Mutex<Xoshiro256PlusPlus>>
             ) {
                 // set the new velocity
                 self.set_velocity(
@@ -509,11 +506,10 @@ macro_rules! add_particle_impl {
                     local_weight,
                     global_weight,
                     global_best_position,
-                    rng,
                 );
                 // move the particle. Takes into account stepsize for jitter in a single
                 //  dimension, and velocity over all dimensions.
-                self.perturb(rng);
+                self.perturb();
 
                 let score = self.evaluate(objective); //, rec_db, kmer, max_count, alpha);
 
@@ -524,7 +520,7 @@ macro_rules! add_particle_impl {
                     //  determine whether we accept the move.
                     //  if we reject, revert to prior state and perturb again.
                     Method::SimulatedAnnealing => {
-                        if !self.accept(&score, accept_from_logit, rng) {
+                        if !self.accept(&score, accept_from_logit) {
                             self.revert();
                         } else {
                             // Update prior score [and possibly the best score] if we accepted
@@ -532,7 +528,7 @@ macro_rules! add_particle_impl {
                         }
                     }
                     Method::ReplicaExchange => {
-                        if !self.accept(&score, accept_from_logit, rng) {
+                        if !self.accept(&score, accept_from_logit) {
                             self.revert();
                         } else {
                             // Update prior score [and possibly the best score] if we accepted
@@ -573,8 +569,7 @@ macro_rules! add_particle_impl {
             /// `exp(-(score - prior_score)/T)`
             ///
             /// where T is temperature.
-            fn accept(&mut self, score: &f64, accept_from_logit: &bool, rng: Arc<Mutex<Xoshiro256PlusPlus>>) -> bool {
-                let mut lrng = rng.lock().unwrap();
+            fn accept(&mut self, score: &f64, accept_from_logit: &bool) -> bool {
                 if *accept_from_logit {
                     // clamp score to just barely above -1.0, up to just barely below 0.0
                     // this avoids runtime error in logit
@@ -594,7 +589,7 @@ macro_rules! add_particle_impl {
                         // the only difference here is that, again, because we're really maximizing
                         // a score, we just use diff, and not -diff.
                         let accept_prob = (diff/self.temperature).exp();
-                        if accept_prob > lrng.gen() {
+                        if accept_prob > self.rng.gen() {
                             true
                         }
                         else {
@@ -609,7 +604,7 @@ macro_rules! add_particle_impl {
                     } else {
                         // this is the function used by scipy.optimize.basinhopping for P(accept)
                         let accept_prob = (-diff/self.temperature).exp();
-                        if accept_prob > lrng.gen() {
+                        if accept_prob > self.rng.gen() {
                             true
                         }
                         else {
@@ -646,142 +641,165 @@ pub struct System {
     objective: fn(&Vec<f64>) -> f64,
 }
 
-//struct ParSystemIter<'a> {
-//    particle_slice: &'a mut [Optimizer],
-//}
+type Data = Optimizer;
 
-struct ParSystemIterMut<'a> {
-    particle_slice: &'a mut [Optimizer],
-}
-
-impl<'a> IntoParallelIterator for &'a mut System {
-    type Iter = ParSystemIterMut<'a>;
-    type Item = &'a mut Optimizer;
-
-    fn into_par_iter(self) -> Self::Iter {
-        ParSystemIterMut { particle_slice: &mut self.particles }
+impl Debug for System {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.particles.fmt(f)
     }
 }
 
-//impl<'a> ParallelIterator for ParSystemIter<'a>{
-//    type Item = &'a Optimizer;
-//
-//    fn drive_unindexed<C>(self, consumer:C) -> C::Result
-//    where C: UnindexedConsumer<Self::Item> {
-//        bridge(self, consumer)
-//    }
-//
-//    fn opt_len(&self) -> Option<usize> {
-//        Some(self.len())
-//    }
-//}
+impl<'a> IntoParallelIterator for &'a System {
+    type Iter = ParDataIter<'a>;
+    type Item = &'a Data;
 
-impl<'a> ParallelIterator for ParSystemIterMut<'a>{
-    type Item = &'a mut Optimizer;
+    fn into_par_iter(self) -> Self::Iter {
+        ParDataIter { data: &self.particles }
+    }
+}
 
-    fn drive_unindexed<C>(self, consumer:C) -> C::Result
-    where C: UnindexedConsumer<Self::Item> {
+impl<'a> IntoParallelIterator for &'a mut System {
+    type Iter = ParDataIterMut<'a>;
+    type Item = &'a mut Data;
+
+    fn into_par_iter(self) -> Self::Iter {
+        ParDataIterMut { data: self }
+    }
+}
+
+pub struct ParDataIter<'a> {
+    data: &'a [Data],
+}
+
+pub struct ParDataIterMut<'a> {
+    data: &'a mut System,
+}
+
+impl<'a> ParallelIterator for ParDataIter<'a> {
+    type Item = &'a Data;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
         bridge(self, consumer)
     }
 
     fn opt_len(&self) -> Option<usize> {
-        Some(self.len())
+        Some(<Self as IndexedParallelIterator>::len(self))
     }
 }
 
-//impl<'a> IndexedParallelIterator for ParSystemIter<'a> {
-//    fn with_producer<CB: ProducerCallback<Self::Item>>(
-//        self,
-//        callback: CB,
-//    ) -> CB::Output {
-//        let producer = ParticleProducer::from(self);
-//        callback.callback(producer)
-//    }
-//
-//    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-//        bridge(self, consumer)
-//    }
-//
-//    fn len(&self) -> usize {
-//        self.particle_slice.len()
-//    }
-//}
+impl<'a> ParallelIterator for ParDataIterMut<'a> {
+    type Item = &'a mut Data;
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
 
-impl<'a> IndexedParallelIterator for ParSystemIterMut<'a> {
-    fn with_producer<CB: ProducerCallback<Self::Item>>(
+    fn opt_len(&self) -> Option<usize> {
+        Some(<Self as IndexedParallelIterator>::len(self))
+    }
+}
+
+impl<'a> IndexedParallelIterator for ParDataIter<'a> {
+    fn with_producer<CB: rayon::iter::plumbing::ProducerCallback<Self::Item>>(
         self,
         callback: CB,
     ) -> CB::Output {
-        let producer = ParticleProducerMut::from(self);
-        callback.callback(producer)
+        let data_producer = DataProducer::from(self);
+        callback.callback(data_producer)
     }
 
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+    fn drive<C: rayon::iter::plumbing::Consumer<Self::Item>>(self, consumer: C) -> C::Result {
         bridge(self, consumer)
     }
 
     fn len(&self) -> usize {
-        self.particle_slice.len()
+        self.data.len()
     }
 }
 
-//struct ParticleProducer<'a> {
-//    particle_slice: &'a [Optimizer],
-//}
-
-struct ParticleProducerMut<'a> {
-    particle_slice: &'a mut [Optimizer],
-}
-
-impl<'a> Producer for ParticleProducerMut<'a> {
-    type Item = &'a mut Optimizer;
-    type IntoIter = std::slice::IterMut<'a, Optimizer>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.particle_slice.iter_mut()
+impl<'a> IndexedParallelIterator for ParDataIterMut<'a> {
+    fn with_producer<CB: rayon::iter::plumbing::ProducerCallback<Self::Item>>(
+        self,
+        callback: CB,
+    ) -> CB::Output {
+        let producer = DataProducerMut::from(self);
+        callback.callback(producer)
     }
 
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (mut left, mut right) = self.particle_slice.split_at(index);
-        (
-            ParticleProducerMut { particle_slice: &mut left },
-            ParticleProducerMut { particle_slice: &mut right },
-        )
+    fn drive<C: rayon::iter::plumbing::Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.data.particles.len()
     }
 }
 
-//impl<'a> Producer for ParticleProducer<'a> {
-//    type Item = &'a Optimizer;
-//    type IntoIter = std::slice::Iter<'a, Optimizer>;
-//
-//    fn into_iter(self) -> Self::IntoIter {
-//        self.particle_slice.iter()
-//    }
-//
-//    fn split_at(self, index: usize) -> (Self, Self) {
-//        let (left, right) = self.particle_slice.split_at(index);
-//        (
-//            ParticleProducer { particle_slice: left },
-//            ParticleProducer { particle_slice: right },
-//        )
-//    }
-//}
+pub struct DataProducer<'a> {
+    data_slice: &'a [Data],
+}
 
-impl<'a> From<ParSystemIterMut<'a>> for ParticleProducerMut<'a> {
-    fn from(iterator: ParSystemIterMut<'a>) -> Self {
+pub struct DataProducerMut<'a> {
+    data_slice: &'a mut [Data],
+}
+
+impl<'a> From<&'a mut [Data]> for DataProducerMut<'a> {
+    fn from(data_slice: &'a mut [Data]) -> Self {
+        Self { data_slice }
+    }
+}
+
+impl<'a> From<ParDataIter<'a>> for DataProducer<'a> {
+    fn from(iterator: ParDataIter<'a>) -> Self {
         Self {
-            particle_slice: iterator.particle_slice,
+            data_slice: &iterator.data,
         }
     }
 }
 
-//impl<'a> From<ParSystemIter<'a>> for ParticleProducer<'a> {
-//    fn from(iterator: ParSystemIter<'a>) -> Self {
-//        Self {
-//            particle_slice: iterator.particle_slice,
-//        }
-//    }
-//}
+impl<'a> From<ParDataIterMut<'a>> for DataProducerMut<'a> {
+    fn from(iterator: ParDataIterMut<'a>) -> Self {
+        Self {
+            data_slice: &mut iterator.data.particles,
+        }
+    }
+}
+
+impl<'a> Producer for DataProducer<'a> {
+    type Item = &'a Data;
+    type IntoIter = std::slice::Iter<'a, Data>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data_slice.iter()
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (left, right) = self.data_slice.split_at(index);
+        (
+            DataProducer { data_slice: left },
+            DataProducer { data_slice: right },
+        )
+    }
+}
+
+impl<'a> Producer for DataProducerMut<'a> {
+    type Item = &'a mut Data;
+    type IntoIter = std::slice::IterMut<'a, Data>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data_slice.iter_mut()
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (left, right) = self.data_slice.split_at_mut(index);
+        (Self::from(left), Self::from(right))
+    }
+}
 
 impl System {
     /// Returns a Swarm of particles whose positions are sampled from
@@ -800,8 +818,9 @@ impl System {
     ) -> System {
         // set variance of new particles around data to initial_jitter^2
         let distr = Normal::new(0.0, initial_jitter).unwrap();
-        let rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
-        let mut lrng = rng.lock().unwrap();
+        //let rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
+        let mut rng = Xoshiro256PlusPlus::from_entropy();
+        //let mut lrng = rng.lock().unwrap();
 
         // instantiate a Vec
         let mut particle_vec: Vec<Optimizer> = Vec::new();
@@ -817,7 +836,7 @@ impl System {
                 }
                 Method::ReplicaExchange => {
                     let temp_distr = Uniform::new(temperature / 3.0, temperature*3.0);
-                    temp = temp_distr.sample(&mut *lrng);
+                    temp = temp_distr.sample(&mut rng);
                 }
                 Method::ParticleSwarm => {
                     temp = 0.0;
@@ -833,17 +852,16 @@ impl System {
                     temp,
                     stepsize,
                     method,
-                    rng,
                 );
                 particle_vec.push(particle);
             } else {
-
+                let mut rng = Xoshiro256PlusPlus::from_entropy();
                 data_vec.iter_mut()
                     .enumerate()
                     .for_each(|(i,a)| {
                         // set new particle's data to data + sample, clamp between bounds
                         *a = *a + distr
-                            .sample(&mut *lrng)
+                            .sample(&mut rng)
                             .clamp(lower[i],upper[i]);
                     });
                 let particle = Optimizer::new(
@@ -854,7 +872,6 @@ impl System {
                     temp,
                     stepsize,
                     method,
-                    rng,
                 );
                 particle_vec.push(particle);
             }
@@ -874,11 +891,11 @@ impl System {
         }
     }
 
-    pub fn parallel_iterator(&mut self) -> ParSystemIterMut {
-        ParSystemIterMut {
-            particle_slice: &mut self.particles,
-        }
-    }
+    //pub fn parallel_iterator(&mut self) -> ParDataIterMut {
+    //    ParDataIterMut {
+    //        particle_slice: &mut self.particles,
+    //    }
+    //}
 
     fn step(
             &mut self,
@@ -888,22 +905,20 @@ impl System {
             t_adj: &f64,
             method: &Method,
             accept_from_logit: &bool,
-            rng: Arc<Mutex<Xoshiro256PlusPlus>>
     ) {
         //for particle in self.iter_mut() {
-        let global_best = &self.global_best_position;
+        let global_best = self.global_best_position.to_vec();
         let obj = self.objective;
         self.par_iter_mut().for_each(|x| {
             x.step(
-                obj,
+                &obj,
                 &inertia,
                 &local_weight,
                 &global_weight,
-                global_best,
+                &global_best,
                 t_adj,
                 method,
                 accept_from_logit,
-                rng,
             );
         });
         //}
@@ -977,8 +992,6 @@ pub fn simulated_annealing(
         &Method::SimulatedAnnealing,
     );
 
-    let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
-
     for _ in 0..niter {
         swarm.step(
             &inertia,
@@ -987,7 +1000,6 @@ pub fn simulated_annealing(
             &t_adj,
             &Method::SimulatedAnnealing,
             accept_from_logit,
-            rng,
         );
     }
     (swarm.global_best_position.to_vec(), swarm.global_best_score)
@@ -1024,7 +1036,6 @@ pub fn particle_swarm(
         &Method::ParticleSwarm,
     );
 
-    let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
     //let mut rng = thread_rng();
 
     for _ in 0..niter {
@@ -1035,7 +1046,6 @@ pub fn particle_swarm(
             &t_adj,
             &Method::ParticleSwarm,
             accept_from_logit,
-            rng,
         );
     }
     (swarm.global_best_position.to_vec(), swarm.global_best_score)
