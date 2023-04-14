@@ -3,12 +3,11 @@ use std::fmt::Debug;
 use rand_distr::{Normal, Uniform};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use ordered_float::OrderedFloat;
-use std::sync::{Arc, Mutex};
-use approx::assert_abs_diff_eq;
-use approx::assert_abs_diff_ne;
+//use std::sync::{Arc, Mutex};
+use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
 use rayon::prelude::*;
-use rayon::iter::plumbing::{Producer,bridge,ProducerCallback,Consumer,UnindexedConsumer};
-use ndarray::prelude::*;
+use rayon::iter::plumbing::{Producer,bridge};
+//use ndarray::prelude::*;
 
 #[cfg(test)]
 mod tests {
@@ -61,11 +60,11 @@ mod tests {
             init_jitter: f64,
             objective: fn(&Vec<f64>) -> f64,
             method: &Method,
-    ) -> System {
+    ) -> Swarm {
 
         let data_vec = vec![0.0, 0.0];
 
-        System::new(
+        Swarm::new(
             n_particles,
             data_vec,
             low.to_vec(),
@@ -85,11 +84,11 @@ mod tests {
             up: &Vec<f64>,
             objective: &dyn Fn(&Vec<f64>) -> f64,
             method: &Method
-    ) -> Optimizer {
+    ) -> Particle {
 
         let T = 2.0;
         //let mut rng = thread_rng();
-        let particle = Optimizer::new(
+        let particle = Particle::new(
             data_vec.to_vec(),
             low.to_vec(),
             up.to_vec(),
@@ -257,7 +256,7 @@ pub enum Method {
     ReplicaExchange,
 }
 
-//pub struct Optimizer {
+//pub struct Particle {
 //    position: Vec<f64>,
 //    prior_position: Vec<f64>,
 //    best_position: Vec<f64>,
@@ -269,10 +268,10 @@ pub enum Method {
 //    velocity: Vec<f64>,
 //    prior_velocity: Vec<f64>,
 //    stepsize: f64,
-//    rng: ThreadRng,
+//    rng: Xoshiro256PlusPlus,
 //}
 
-impl Optimizer {
+impl Particle {
     pub fn new(
         data: Vec<f64>,
         lower: Vec<f64>,
@@ -281,7 +280,7 @@ impl Optimizer {
         temperature: f64,
         stepsize: f64,
         method: &Method,
-    ) -> Optimizer {
+    ) -> Particle {
 
         let mut init_rng = Xoshiro256PlusPlus::from_entropy();
         // initialize velocity for each parameter to zero
@@ -309,7 +308,7 @@ impl Optimizer {
 
         //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
         let rng = Xoshiro256PlusPlus::from_entropy();
-        let mut particle = Optimizer {
+        let mut particle = Particle {
             position: data,
             prior_position: d,
             best_position: pr,
@@ -332,7 +331,7 @@ impl Optimizer {
 
 /// A trait to enable optimization of a set of parameters for
 /// any struct
-pub trait Particle {
+pub trait Optimizer {
     fn evaluate(&self, objective: &dyn Fn(&Vec<f64>) -> f64) -> f64;
     fn perturb(&mut self);
     fn choose_param_index(&mut self) -> usize;
@@ -367,10 +366,10 @@ pub trait Particle {
 // workaround for eliminating redundant code for implementing trait for structs with different fields
 ///////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////
-macro_rules! add_particle_impl {
+macro_rules! add_optimizer_impl {
     ($struct_name:ident { $($field_name:ident : $field_type:ty),* }) => {
         #[derive(Debug)]
-        struct $struct_name {
+        pub struct $struct_name {
             $($field_name : $field_type,)*
             position: Vec<f64>,
             prior_position: Vec<f64>,
@@ -386,7 +385,7 @@ macro_rules! add_particle_impl {
             rng: Xoshiro256PlusPlus,
         }
 
-        impl Particle for $struct_name {
+        impl Optimizer for $struct_name {
 
             /// Gets the score for this Particle
             fn evaluate(
@@ -498,7 +497,6 @@ macro_rules! add_particle_impl {
                     t_adj: &f64,
                     method: &Method,
                     accept_from_logit: &bool,
-                    //rng: Arc<Mutex<Xoshiro256PlusPlus>>
             ) {
                 // set the new velocity
                 self.set_velocity(
@@ -633,23 +631,23 @@ macro_rules! add_particle_impl {
     }
 }
 
-// The idea here is to implement Swarm for System.
-pub struct System {
-    particles: Vec<Optimizer>,
+// The idea here is to implement Swarm for Swarm.
+pub struct Swarm {
+    particles: Vec<Particle>,
     global_best_position: Vec<f64>,
     global_best_score: f64,
     objective: fn(&Vec<f64>) -> f64,
 }
 
-type Data = Optimizer;
+type Data = Particle;
 
-impl Debug for System {
+impl Debug for Swarm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.particles.fmt(f)
     }
 }
 
-impl<'a> IntoParallelIterator for &'a System {
+impl<'a> IntoParallelIterator for &'a Swarm {
     type Iter = ParDataIter<'a>;
     type Item = &'a Data;
 
@@ -658,7 +656,7 @@ impl<'a> IntoParallelIterator for &'a System {
     }
 }
 
-impl<'a> IntoParallelIterator for &'a mut System {
+impl<'a> IntoParallelIterator for &'a mut Swarm {
     type Iter = ParDataIterMut<'a>;
     type Item = &'a mut Data;
 
@@ -672,7 +670,7 @@ pub struct ParDataIter<'a> {
 }
 
 pub struct ParDataIterMut<'a> {
-    data: &'a mut System,
+    data: &'a mut Swarm,
 }
 
 impl<'a> ParallelIterator for ParDataIter<'a> {
@@ -801,7 +799,7 @@ impl<'a> Producer for DataProducerMut<'a> {
     }
 }
 
-impl System {
+impl Swarm {
     /// Returns a Swarm of particles whose positions are sampled from
     /// a normal distribution defined by the original start position
     /// plus 1.5 * stepsize.
@@ -815,7 +813,7 @@ impl System {
             initial_jitter: f64,
             objective: fn(&Vec<f64>) -> f64,
             method: &Method,
-    ) -> System {
+    ) -> Swarm {
         // set variance of new particles around data to initial_jitter^2
         let distr = Normal::new(0.0, initial_jitter).unwrap();
         //let rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
@@ -823,7 +821,7 @@ impl System {
         //let mut lrng = rng.lock().unwrap();
 
         // instantiate a Vec
-        let mut particle_vec: Vec<Optimizer> = Vec::new();
+        let mut particle_vec: Vec<Particle> = Vec::new();
         // instantiate particles around the actual data
         for i in 0..n_particles {
             // instantiate the random number generator
@@ -844,7 +842,7 @@ impl System {
             }
             if i == 0 {
                 // if this is the first particle, place it directly at data_vec
-                let particle = Optimizer::new(
+                let particle = Particle::new(
                     data_vec,
                     lower.to_vec(),
                     upper.to_vec(),
@@ -864,7 +862,7 @@ impl System {
                             .sample(&mut rng)
                             .clamp(lower[i],upper[i]);
                     });
-                let particle = Optimizer::new(
+                let particle = Particle::new(
                     data_vec,
                     lower.to_vec(),
                     upper.to_vec(),
@@ -883,19 +881,13 @@ impl System {
         // lowest score is best, so take first one's position and score
         let best_pos = particle_vec[0].best_position.to_vec();
         let best_score = particle_vec[0].best_score;
-        System{
+        Swarm {
             particles: particle_vec,
             global_best_position: best_pos,
             global_best_score: best_score,
             objective: objective,
         }
     }
-
-    //pub fn parallel_iterator(&mut self) -> ParDataIterMut {
-    //    ParDataIterMut {
-    //        particle_slice: &mut self.particles,
-    //    }
-    //}
 
     fn step(
             &mut self,
@@ -906,7 +898,6 @@ impl System {
             method: &Method,
             accept_from_logit: &bool,
     ) {
-        //for particle in self.iter_mut() {
         let global_best = self.global_best_position.to_vec();
         let obj = self.objective;
         self.par_iter_mut().for_each(|x| {
@@ -921,7 +912,6 @@ impl System {
                 accept_from_logit,
             );
         });
-        //}
         self.particles.sort_unstable_by_key(|particle| OrderedFloat(particle.score));
         self.global_best_position = self.particles[0].best_position.to_vec();
         self.global_best_score = self.particles[0].best_score;
@@ -960,7 +950,7 @@ pub fn logit(p: &f64) -> f64 {
     (p / (1.0-p)).ln()
 }
 
-add_particle_impl!(Optimizer{});
+add_optimizer_impl!(Particle{});
 
 pub fn simulated_annealing(
         params: Vec<f64>,
@@ -980,7 +970,7 @@ pub fn simulated_annealing(
     let local_weight = 0.0;
     let global_weight = 0.0;
 
-    let mut swarm = System::new(
+    let mut swarm = Swarm::new(
         1, // n_particles is always 1 for simulated annealing
         params, // Vec<f64>
         lower,
@@ -1024,7 +1014,7 @@ pub fn particle_swarm(
     let temp = 0.0;
     let t_adj = 0.0;
 
-    let mut swarm = System::new(
+    let mut swarm = Swarm::new(
         n_particles,
         params,
         lower,
