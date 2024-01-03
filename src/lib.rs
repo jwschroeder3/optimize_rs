@@ -17,7 +17,7 @@ mod tests {
     struct System;
     impl Optimizer for System {
         fn objective(&self, param: &Vec<f64>) -> f64 {
-            himmelblau(param)
+            rosenbrock(param)
         }
     }
 
@@ -59,7 +59,7 @@ mod tests {
             .sum()
     }
 
-    fn set_up_swarm<'a, T>(
+    fn set_up_particles<'a, T>(
             n_particles: usize,
             temp: f64,
             step: &'a f64,
@@ -67,16 +67,15 @@ mod tests {
             up: &'a Vec<f64>,
             init_jitter: f64,
             object: T,
-            //objective: fn(&Vec<f64>) -> f64,
             method: &Method,
-    ) -> Swarm<T>
+    ) -> Particles<T>
         where
             T: Optimizer + Clone,
     {
 
         let data_vec = vec![0.0, 0.0];
 
-        Swarm::new(
+        Particles::new(
             n_particles,
             data_vec,
             low.to_vec(),
@@ -135,7 +134,10 @@ mod tests {
             &Method::SimulatedAnnealing,
         );
         let score = particle.evaluate();
-        assert_eq!(&score, &170.0);
+        // for himmelblau
+        //assert_eq!(&score, &170.0);
+        // for rosenbrock
+        assert_eq!(&score, &1.0);
     }
 
     #[test]
@@ -233,30 +235,81 @@ mod tests {
         println!("Position after: {:?}", &particle.position);
     }
 
-    //#[test]
-    //fn test_temp_switch() {
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    /////////////////////////////////////////////////////////////////////////////
-    //}
+    #[test]
+    fn test_temp_swap() {
+        let mut particles = set_up_particles(
+            6,
+            1.0,
+            &0.25,
+            &vec![-0.5, -0.5],
+            &vec![0.5, 0.5],
+            0.5,
+            System{},
+            &Method::ReplicaExchange,
+        );
+        for i in 0..6 {
+            println!("{:?}", particles.particles[i].temperature);
+        }
+        particles.exchange(false);
+        println!("");
+        for i in 0..6 {
+            println!("{:?}", particles.particles[i].temperature);
+        }
+    }
+
+    #[test]
+    fn test_replica_exchange() {
+        let obj = System{};
+        let step = 0.2;
+        let start = vec![0.0, 0.0];
+        let low = vec![-5.0, -5.0];
+        let up = vec![5.0, 5.0];
+        let temp = 10.0;
+        let niter = 20000;
+        let t_adj = 0.0001;
+        let initial_jitter = &step * 8.0;
+        let swap_freq = 5;
+        let n_particles = 50;
+
+        let opt_params = replica_exchange(
+            start.clone(),
+            low,
+            up,
+            n_particles,
+            temp,
+            step,
+            initial_jitter,
+            niter,
+            &t_adj,
+            &swap_freq,
+            obj,
+            &false,
+        );
+
+        let target = vec![1.0,1.0];
+
+        opt_params.0.iter()
+            .zip(&start)
+            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+        opt_params.0.iter()
+            .zip(target)
+            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
+        println!("Replica exchange result: {:?}", opt_params);
+    }
 
     #[test]
     fn test_annealing() {
         let obj = System{};
-        let step = 0.25;
+        let step = 0.2;
         let start = vec![0.0, 0.0];
         let low = vec![-5.0, -5.0];
         let up = vec![5.0, 5.0];
-        let temp = 5.0;
-        let niter = 10000;
+        let temp = 10.0;
+        let niter = 20000;
         let t_adj = 0.0001;
 
         let opt_params = simulated_annealing(
-            start,
+            start.clone(),
             low,
             up,
             temp,
@@ -268,6 +321,14 @@ mod tests {
             &false,
         );
 
+        let target = vec![1.0,1.0];
+
+        opt_params.0.iter()
+            .zip(&start)
+            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+        opt_params.0.iter()
+            .zip(target)
+            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
         println!("Annealing result: {:?}", opt_params);
     }
 
@@ -288,7 +349,7 @@ mod tests {
         let niter = 1000;
 
         let opt_params = particle_swarm(
-            start,
+            start.clone(),
             low,
             up,
             n_particles,
@@ -300,6 +361,15 @@ mod tests {
             obj,
             &false,
         );
+
+        let target = vec![1.0,1.0];
+
+        opt_params.0.iter()
+            .zip(&start)
+            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+        opt_params.0.iter()
+            .zip(target)
+            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
 
         println!("Swarm result: {:?}", opt_params);
     }
@@ -634,6 +704,20 @@ impl<T: Optimizer> Particle<T> {
     fn adjust_temp(&mut self, t_adj: &f64) {
         self.temperature *= (1.0 - t_adj)
     }
+
+    /// Adjusts that stepsize of the Particle
+    ///
+    /// Definaed as
+    ///
+    /// ` S_{i+1} = S_i * (1.0 - s_{adj})`
+    ///
+    /// # Arguments
+    ///
+    /// * `s_adj` - fractional amount by which to decrease the stepsize of the
+    ///     particle.
+    fn adjust_stepsize(&mut self, s_adj: &f64) {
+        self.stepsize *= (1.0 - s_adj)
+    }
 }
 
 /// A trait to enable optimization of a set of parameters for
@@ -699,7 +783,7 @@ pub trait Optimizer {
 
 // The idea here is to implement Swarm for Swarm.
 //pub struct Swarm<T> {
-pub struct Swarm<T> {
+pub struct Particles<T> {
     particles: Vec<Particle<T>>,
     global_best_position: Vec<f64>,
     global_best_score: f64,
@@ -709,13 +793,13 @@ pub struct Swarm<T> {
 
 //type Data = Particle;
 //
-//impl<T> Debug for Swarm<T> {
+//impl<T> Debug for Particles<T> {
 //    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 //        self.particles.fmt(f)
 //    }
 //}
 //
-//impl<'a, T> IntoParallelIterator for &'a Swarm<T> {
+//impl<'a, T> IntoParallelIterator for &'a Particles<T> {
 //    type Iter = ParDataIter<'a>;
 //    type Item = &'a Data;
 //
@@ -724,7 +808,7 @@ pub struct Swarm<T> {
 //    }
 //}
 //
-//impl<'a, T: std::marker::Send> IntoParallelIterator for &'a mut Swarm<T> {
+//impl<'a, T: std::marker::Send> IntoParallelIterator for &'a mut Particles<T> {
 //    type Iter = ParDataIterMut<'a, T>;
 //    type Item = &'a mut Data;
 //
@@ -738,7 +822,7 @@ pub struct Swarm<T> {
 //}
 //
 //pub struct ParDataIterMut<'a, T> {
-//    data: &'a mut Swarm<T>,
+//    data: &'a mut Particles<T>,
 //}
 //
 //impl<'a> ParallelIterator for ParDataIter<'a> {
@@ -867,8 +951,8 @@ pub struct Swarm<T> {
 //    }
 //}
 
-impl<T: Optimizer + Clone> Swarm<T> {
-    /// Returns a Swarm of particles whose positions are sampled from
+impl<T: Optimizer + Clone> Particles<T> {
+    /// Returns particles whose positions are sampled from
     /// a normal distribution defined by the original start position
     /// plus 1.5 * stepsize.
     pub fn new(
@@ -880,9 +964,8 @@ impl<T: Optimizer + Clone> Swarm<T> {
             stepsize: f64,
             initial_jitter: f64,
             object: T,
-            //objective: fn(&Vec<f64>) -> f64,
             method: &Method,
-    ) -> Swarm<T>
+    ) -> Particles<T>
         where
             T: Optimizer + Clone,
     {
@@ -894,6 +977,19 @@ impl<T: Optimizer + Clone> Swarm<T> {
 
         // instantiate a Vec
         let mut particle_vec: Vec<Particle<T>> = Vec::new();
+
+        // if doing ReplicaExchange, we'll need geomspace vec of temps
+        let t_start = temperature / 3.0;
+        let log_start = t_start.log10();
+        let t_end = temperature * 3.0;
+        let log_end = t_end.log10();
+
+        let dt = (log_end - log_start) / ((n_particles - 1) as f64);
+        let mut temps = vec![log_start; n_particles];
+        for i in 1..n_particles {
+            temps[i] = temps[i - 1] + dt;
+        }
+
         // instantiate particles around the actual data
         for i in 0..n_particles {
             //
@@ -907,8 +1003,7 @@ impl<T: Optimizer + Clone> Swarm<T> {
                     temp = temperature;
                 }
                 Method::ReplicaExchange => {
-                    let temp_distr = Uniform::new(temperature / 3.0, temperature*3.0);
-                    temp = temp_distr.sample(&mut rng);
+                    temp = temps[i].exp();
                 }
                 Method::ParticleSwarm => {
                     temp = 0.0;
@@ -922,7 +1017,6 @@ impl<T: Optimizer + Clone> Swarm<T> {
                     lower.to_vec(),
                     upper.to_vec(),
                     obj_i,
-                    //&objective,
                     temp,
                     stepsize,
                     method,
@@ -943,7 +1037,6 @@ impl<T: Optimizer + Clone> Swarm<T> {
                     lower.to_vec(),
                     upper.to_vec(),
                     obj_i,
-                    //&objective,
                     temp,
                     stepsize,
                     method,
@@ -958,12 +1051,10 @@ impl<T: Optimizer + Clone> Swarm<T> {
         // lowest score is best, so take first one's position and score
         let best_pos = particle_vec[0].best_position.to_vec();
         let best_score = particle_vec[0].best_score;
-        Swarm {
+        Particles {
             particles: particle_vec,
             global_best_position: best_pos,
             global_best_score: best_score,
-            //objective: objective,
-            //object: *object,
         }
     }
 
@@ -998,7 +1089,7 @@ impl<T: Optimizer + Clone> Swarm<T> {
         self.global_best_score = self.particles[0].best_score;
     }
 
-    pub fn exchange(&mut self, odds: bool) {
+    fn exchange(&mut self, odds: bool) {
         let mut iterator = Vec::new();
         if odds {
             let swap_num = self.len() / 2;
@@ -1020,7 +1111,7 @@ impl<T: Optimizer + Clone> Swarm<T> {
         }
     }
 
-    /// Returns the number of particles in the Swarm
+    /// Returns the number of particles in the Particles
     pub fn len(&self) -> usize {self.particles.len()}
 }
 
@@ -1032,6 +1123,58 @@ pub fn logit(p: &f64) -> f64 {
 }
 
 //add_optimizer_impl!(Particle{});
+
+pub fn replica_exchange<T>(
+        params: Vec<f64>,
+        lower: Vec<f64>,
+        upper: Vec<f64>,
+        n_particles: usize,
+        temp: f64,
+        step: f64,
+        initial_jitter: f64,
+        niter: usize,
+        t_adj: &f64,
+        swap_freq: &usize,
+        object: T,
+        accept_from_logit: &bool,
+) -> (Vec<f64>, f64)
+    where
+        T: Optimizer + Clone,
+{
+
+    // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
+    // thus leaving only the jitter to affect particle position
+    let inertia = 0.0;
+    let local_weight = 0.0;
+    let global_weight = 0.0;
+
+    let mut particles = Particles::new(
+        n_particles,
+        params,
+        lower,
+        upper,
+        temp,
+        step,
+        initial_jitter,
+        object,
+        &Method::ReplicaExchange,
+    );
+
+    for i in 0..niter {
+        if i % swap_freq == 0 {
+            particles.exchange(true);
+        }
+        particles.step(
+            &inertia,
+            &local_weight,
+            &global_weight,
+            &t_adj,
+            &Method::ReplicaExchange,
+            accept_from_logit,
+        );
+    }
+    (particles.global_best_position.to_vec(), particles.global_best_score)
+}
 
 pub fn simulated_annealing<T>(
         params: Vec<f64>,
@@ -1055,7 +1198,7 @@ pub fn simulated_annealing<T>(
     let local_weight = 0.0;
     let global_weight = 0.0;
 
-    let mut swarm = Swarm::new(
+    let mut particles = Particles::new(
         1, // n_particles is always 1 for simulated annealing
         params, // Vec<f64>
         lower,
@@ -1069,7 +1212,7 @@ pub fn simulated_annealing<T>(
     );
 
     for _ in 0..niter {
-        swarm.step(
+        particles.step(
             &inertia,
             &local_weight,
             &global_weight,
@@ -1078,7 +1221,7 @@ pub fn simulated_annealing<T>(
             accept_from_logit,
         );
     }
-    (swarm.global_best_position.to_vec(), swarm.global_best_score)
+    (particles.global_best_position.to_vec(), particles.global_best_score)
 }
 
 pub fn particle_swarm<T>(
@@ -1102,7 +1245,7 @@ pub fn particle_swarm<T>(
     let temp = 0.0;
     let t_adj = 0.0;
 
-    let mut swarm = Swarm::new(
+    let mut particles = Particles::new(
         n_particles,
         params,
         lower,
@@ -1118,7 +1261,7 @@ pub fn particle_swarm<T>(
     //let mut rng = thread_rng();
 
     for _ in 0..niter {
-        swarm.step(
+        particles.step(
             &inertia,
             &local_weight,
             &global_weight,
@@ -1127,7 +1270,7 @@ pub fn particle_swarm<T>(
             accept_from_logit,
         );
     }
-    (swarm.global_best_position.to_vec(), swarm.global_best_score)
+    (particles.global_best_position.to_vec(), particles.global_best_score)
 }
 
 
