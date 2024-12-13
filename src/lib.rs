@@ -215,6 +215,7 @@ mod tests {
             &local_weight,
             &global_weight,
             &global_best,
+            &method,
         );
         // particle velocity should have changed
         particle.velocity.iter()
@@ -460,15 +461,18 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
                         let nudge = init_rng.gen_range(-init_range..init_range);
                         *vel = *vel + nudge;
                 });
+            },
+            Method::PIDAO => {
+                todo!()
             }
             _ => (),
         }
+        // copy of velocity to place something into prior_velocity
         let pv = v.to_vec();
         // copy of data to place something into prior_position
         let d = data.to_vec();
         let pr = data.to_vec();
 
-        //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
         let rng = Xoshiro256PlusPlus::from_entropy();
         let mut particle = Particle {
             object: object,
@@ -494,7 +498,6 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     fn evaluate(
             &self,
     ) -> f64 {
-        // the parens are necessary here!
         self.object.objective(&self.position)
     }
 
@@ -507,7 +510,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     /// Complementary to that, if you want only the velocity to affect particle
     /// position, but no random jitter, set stepsize to 0.0.
     /// Modifies self.position in place.
-    fn perturb(&mut self) {
+    fn perturb(&mut self, method: &Method) {
 
         // before we change the position, set prior position to current position
         // this will enable reversion to prior state if we later reject the move
@@ -518,8 +521,22 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
         // by how far will we nudge?
         let jitter = self.get_jitter();
 
-        // nudge the randomly chosen index by jitter
-        self.position[idx] += jitter;
+        match method {
+            Method::SimulatedAnnealing => {
+                // nudge the randomly chosen index by jitter
+                self.position[idx] += jitter;
+            },
+            Method::ReplicaExchange => {
+                // nudge the randomly chosen index by jitter
+                self.position[idx] += jitter;
+            },
+            Method::BayesianOptimization => {
+                // nudge the randomly chosen index by jitter
+                self.position[idx] += jitter;
+            },
+            // don't use jitter for particleswarm or PIDAO
+            _ => (),
+        }
         // add velocity element-wise to position
         self.position.iter_mut() // mutably iterate over each position
             .zip(&self.velocity) // in lockstep with velocity in each dimension
@@ -557,7 +574,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     /// Set the velocity of the Particle
     fn set_velocity(&mut self, inertia: &f64,
             local_weight: &f64, global_weight: &f64,
-            global_best_position: &Vec<f64>) {
+            global_best_position: &Vec<f64>, method: &Method) {
 
         /////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////
@@ -566,34 +583,52 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
         /////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////
+        match method {
+            // if we are doing particle swarm, just update and move on
+            Method::ParticleSwarm => {
          
-        // before we change the velocity, set prior velocity to current velocity
-        // this will enable reversion to prior state if we later reject the move
-        self.prior_velocity = self.velocity.to_vec();
-        // set stochastic element of weights applied to local and global best pos
-        // self.rng.gen samples from [0.0, 1.0)
-        let r_arr: [f64; 2] = self.rng.gen();
-        // set the new velocity
-        self.velocity.iter_mut() // mutably iterate over current velocity
-            .zip(&self.best_position) // in lockstep with this Particle's best position
-            .zip(global_best_position) // and the global best position
-            .zip(&self.position) // and the current position
-            .zip(&self.lower_bound) // and the lower bound
-            .zip(&self.upper_bound) // and the upper bound
-            // a=vel, b=local_best, c=swarm_best, d=pos, e=lower_bound, f=upper_bound
-            .for_each(|(((((a, b), c), d), e), f)| {
-                //let range = f - e;
-                let term1 = inertia * *a;
-                // attraction to the particle's own best gets stronger with distance
-                let term2 = local_weight * r_arr[0] * (b - d);
-                // attraction to the swarms's best gets stronger with distance
-                let term3 = global_weight * r_arr[1] * (c - d);
-                // repulsion from lower bound defined by squared distance to lower bound
-                //let term4 = -(range / 100.0) / ((e - d) * (e - d));
-                // repulsion from upper bound defined by squared distance to upper bound
-                //let term5 = -(range / 100.0) / ((f - d) * (f - d));
-                *a = term1 + term2 + term3// + term4 + term5
-            })
+                // before we change the velocity,
+                // set prior velocity to current velocity
+                // this will enable reversion to prior state
+                // if we later reject the move
+                self.prior_velocity = self.velocity.to_vec();
+                // set stochastic element of weights applied to
+                // local and global best pos
+                // self.rng.gen samples from [0.0, 1.0)
+                let r_arr: [f64; 2] = self.rng.gen();
+                // set the new velocity
+                self.velocity.iter_mut() // mutably iterate over current velocity
+                    .zip(&self.best_position) // in lockstep with this Particle's
+                                              // best position
+                    .zip(global_best_position) // and the global best position
+                    .zip(&self.position) // and the current position
+                    .zip(&self.lower_bound) // and the lower bound
+                    .zip(&self.upper_bound) // and the upper bound
+                    // a=vel, b=local_best, c=swarm_best, d=pos,
+                    // e=lower_bound, f=upper_bound
+                    .for_each(|(((((a, b), c), d), e), f)| {
+                        //let range = f - e;
+                        let term1 = inertia * *a;
+                        // attraction to the particle's own best gets
+                        // stronger with distance
+                        let term2 = local_weight * r_arr[0] * (b - d);
+                        // attraction to the swarms's best gets
+                        // stronger with distance
+                        let term3 = global_weight * r_arr[1] * (c - d);
+                        // repulsion from lower bound defined by
+                        // squared distance to lower bound
+                        //let term4 = -(range / 100.0) / ((e - d) * (e - d));
+                        // repulsion from upper bound defined by squared
+                        // distance to upper bound
+                        //let term5 = -(range / 100.0) / ((f - d) * (f - d));
+                        *a = term1 + term2 + term3// + term4 + term5
+                    })
+            },
+            Method::PIDAO => {
+                todo!()
+            },
+            _ => (),
+        }
     }
 
     fn step(
@@ -615,6 +650,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
             local_weight,
             global_weight,
             global_best_position,
+            method,
         );
         // move the particle. Takes into account stepsize for jitter in a single
         //  dimension, and velocity over all dimensions.
