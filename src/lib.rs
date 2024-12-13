@@ -5,7 +5,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use ordered_float::OrderedFloat;
 //use std::sync::{Arc, Mutex};
 use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
-//use rayon::prelude::*;
+use rayon::prelude::*;
 //use rayon::iter::plumbing::{Producer,bridge};
 //use ndarray::prelude::*;
 
@@ -70,10 +70,10 @@ mod tests {
             method: &Method,
     ) -> Particles<T>
         where
-            T: Optimizer + Clone,
+            T: Optimizer + Clone + std::marker::Send,
     {
 
-        let data_vec = vec![0.0, 0.0];
+        let data_vec = vec![0.0, 0.0, 0.0, 0.0, 0.0];
 
         Particles::new(
             n_particles,
@@ -84,7 +84,6 @@ mod tests {
             *step,
             init_jitter,
             object,
-            //objective,
             method,
         )
     }
@@ -95,21 +94,18 @@ mod tests {
             low: &Vec<f64>,
             up: &Vec<f64>,
             object: T,
-            //objective: &dyn Fn(&Vec<f64>) -> f64,
             method: &Method
     ) -> Particle<T>
         where
-            T: Optimizer,
+            T: Optimizer + std::marker::Send,
     {
 
         let temp = 2.0;
-        //let mut rng = thread_rng();
         let particle = Particle::new(
             data_vec.to_vec(),
             low.to_vec(),
             up.to_vec(),
             object,
-            //objective,
             temp,
             *step,
             method,
@@ -241,8 +237,8 @@ mod tests {
             6,
             1.0,
             &0.25,
-            &vec![-0.5, -0.5],
-            &vec![0.5, 0.5],
+            &vec![-0.5, -0.5, -0.5, -0.5, -0.5],
+            &vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
             0.5,
             System{},
             &Method::ReplicaExchange,
@@ -373,6 +369,40 @@ mod tests {
 
         println!("Swarm result: {:?}", opt_params);
     }
+
+    #[test]
+    fn test_pidao() {
+
+        let obj = System{};
+        let step = 0.25;
+        let start = vec![0.0, 0.0];
+        let low = vec![-5.0, -5.0];
+        let up = vec![5.0, 5.0];
+
+        let niter = 1000;
+
+        let opt_params = pidao(
+            start.clone(),
+            low,
+            up,
+            step,
+            niter,
+            obj,
+            &false,
+        );
+
+        let target = vec![1.0,1.0];
+
+        opt_params.0.iter()
+            .zip(&start)
+            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+        opt_params.0.iter()
+            .zip(target)
+            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
+
+        println!("PIDAO result: {:?}", opt_params);
+    }
+
 }
 
 pub enum Method {
@@ -380,6 +410,7 @@ pub enum Method {
     ParticleSwarm,
     ReplicaExchange,
     BayesianOptimization,
+    PIDAO,
 }
 
 #[derive(Debug)]
@@ -399,19 +430,18 @@ pub struct Particle<T> {
     rng: Xoshiro256PlusPlus,
 }
 
-impl<T: Optimizer> Particle<T> {
+impl<T: Optimizer + std::marker::Send> Particle<T> {
     pub fn new(
         data: Vec<f64>,
         lower: Vec<f64>,
         upper: Vec<f64>,
         object: T,
-        //objective: &dyn Fn(&Vec<f64>) -> f64,
         temperature: f64,
         stepsize: f64,
         method: &Method,
     ) -> Particle<T>
         where
-            T: Optimizer,
+            T: Optimizer + std::marker::Send,
     {
 
         let mut init_rng = Xoshiro256PlusPlus::from_entropy();
@@ -528,8 +558,15 @@ impl<T: Optimizer> Particle<T> {
     fn set_velocity(&mut self, inertia: &f64,
             local_weight: &f64, global_weight: &f64,
             global_best_position: &Vec<f64>) {
+
+        /////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////
+        // I think that this is where I can get dx_dt in for PIDAO
+        /////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////
          
-        //let mut lrng = rng.lock().unwrap();
         // before we change the velocity, set prior velocity to current velocity
         // this will enable reversion to prior state if we later reject the move
         self.prior_velocity = self.velocity.to_vec();
@@ -561,8 +598,6 @@ impl<T: Optimizer> Particle<T> {
 
     fn step(
             &mut self,
-            //objective: &dyn Fn(&Vec<f64>) -> f64,
-            //object: &T,
             inertia: &f64,
             local_weight: &f64,
             global_weight: &f64,
@@ -572,7 +607,7 @@ impl<T: Optimizer> Particle<T> {
             accept_from_logit: &bool,
     )
         where
-            T: Optimizer,
+            T: Optimizer + std::marker::Send,
     {
         // set the new velocity
         self.set_velocity(
@@ -609,7 +644,8 @@ impl<T: Optimizer> Particle<T> {
                     self.update_scores(&score);
                 }
             }
-            Method::BayesianOptimization => todo!()
+            Method::BayesianOptimization => todo!(),
+            Method::PIDAO => self.update_scores(&score)
         }
         // adjust the temperature downward
         ////////////////////////////////////////////////////
@@ -724,234 +760,15 @@ impl<T: Optimizer> Particle<T> {
 /// any struct
 pub trait Optimizer {
     fn objective(&self, theta: &Vec<f64>) -> f64;
-    //fn evaluate(&self, objective: &dyn Fn(&Vec<f64>) -> f64) -> f64;
-    //fn perturb(&mut self);
-    //fn choose_param_index(&mut self) -> usize;
-    //fn get_jitter(&mut self) -> f64;
-    //fn set_velocity(&mut self, inertia: &f64,
-    //        local_weight: &f64, global_weight: &f64,
-    //        global_best_position: &Vec<f64>);
-    //fn step(
-    //        &mut self,
-    //        objective: &dyn Fn(&Vec<f64>) -> f64,
-    //        inertia: &f64,
-    //        local_weight: &f64,
-    //        global_weight: &f64,
-    //        global_best_position: &Vec<f64>,
-    //        t_adj: &f64,
-    //        method: &Method,
-    //        accept_from_logit: &bool,
-    //);
-    //fn update_scores(&mut self, score: &f64);
-    //fn revert(&mut self);
-    //fn accept(&mut self, score: &f64, accept_from_logit: &bool) -> bool;
-    //fn adjust_temp(&mut self, t_adj: &f64);
 }
 
-///// A trait to organize Particles into a Swarm
-//pub trait Swarm {
-//    fn new(particles: Vec<Box<T>>, objective: Fn(&Vec<f65>) -> f64) -> Self
-//}
-
-///////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////
-// workaround for eliminating redundant code for implementing trait for structs with different fields
-///////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////
-//macro_rules! add_optimizer_impl {
-//    ($struct_name:ident { $($field_name:ident : $field_type:ty),* }) => {
-//        #[derive(Debug)]
-//        pub struct $struct_name {
-//            $($field_name : $field_type,)*
-//            position: Vec<f64>,
-//            prior_position: Vec<f64>,
-//            best_position: Vec<f64>,
-//            best_score: f64,
-//            score: f64,
-//            lower_bound: Vec<f64>,
-//            upper_bound: Vec<f64>,
-//            temperature: f64,
-//            velocity: Vec<f64>,
-//            prior_velocity: Vec<f64>,
-//            stepsize: f64,
-//            rng: Xoshiro256PlusPlus,
-//        }
-//
-//        impl Optimizer for $struct_name {
-//        }
-//}
-
-// The idea here is to implement Swarm for Swarm.
-//pub struct Swarm<T> {
 pub struct Particles<T> {
     particles: Vec<Particle<T>>,
     global_best_position: Vec<f64>,
     global_best_score: f64,
-    //objective: fn(&Vec<f64>) -> f64,
-    //object: T,
 }
 
-//type Data = Particle;
-//
-//impl<T> Debug for Particles<T> {
-//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//        self.particles.fmt(f)
-//    }
-//}
-//
-//impl<'a, T> IntoParallelIterator for &'a Particles<T> {
-//    type Iter = ParDataIter<'a>;
-//    type Item = &'a Data;
-//
-//    fn into_par_iter(self) -> Self::Iter {
-//        ParDataIter { data: &self.particles }
-//    }
-//}
-//
-//impl<'a, T: std::marker::Send> IntoParallelIterator for &'a mut Particles<T> {
-//    type Iter = ParDataIterMut<'a, T>;
-//    type Item = &'a mut Data;
-//
-//    fn into_par_iter(self) -> Self::Iter {
-//        ParDataIterMut { data: self }
-//    }
-//}
-//
-//pub struct ParDataIter<'a> {
-//    data: &'a [Data],
-//}
-//
-//pub struct ParDataIterMut<'a, T> {
-//    data: &'a mut Particles<T>,
-//}
-//
-//impl<'a> ParallelIterator for ParDataIter<'a> {
-//    type Item = &'a Data;
-//
-//    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-//        where
-//        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
-//    {
-//        bridge(self, consumer)
-//    }
-//
-//    fn opt_len(&self) -> Option<usize> {
-//        Some(<Self as IndexedParallelIterator>::len(self))
-//    }
-//}
-//
-//impl<'a, T: std::marker::Send> ParallelIterator for ParDataIterMut<'a, T> {
-//    type Item = &'a mut Data;
-//    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-//        where
-//        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
-//    {
-//        bridge(self, consumer)
-//    }
-//
-//    fn opt_len(&self) -> Option<usize> {
-//        Some(<Self as IndexedParallelIterator>::len(self))
-//    }
-//}
-//
-//impl<'a> IndexedParallelIterator for ParDataIter<'a> {
-//    fn with_producer<CB: rayon::iter::plumbing::ProducerCallback<Self::Item>>(
-//        self,
-//        callback: CB,
-//    ) -> CB::Output {
-//        let data_producer = DataProducer::from(self);
-//        callback.callback(data_producer)
-//    }
-//
-//    fn drive<C: rayon::iter::plumbing::Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-//        bridge(self, consumer)
-//    }
-//
-//    fn len(&self) -> usize {
-//        self.data.len()
-//    }
-//}
-//
-//impl<'a, T: std::marker::Send> IndexedParallelIterator for ParDataIterMut<'a, T> {
-//    fn with_producer<CB: rayon::iter::plumbing::ProducerCallback<Self::Item>>(
-//        self,
-//        callback: CB,
-//    ) -> CB::Output {
-//        let producer = DataProducerMut::from(self);
-//        callback.callback(producer)
-//    }
-//
-//    fn drive<C: rayon::iter::plumbing::Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-//        bridge(self, consumer)
-//    }
-//
-//    fn len(&self) -> usize {
-//        self.data.particles.len()
-//    }
-//}
-//
-//pub struct DataProducer<'a> {
-//    data_slice: &'a [Data],
-//}
-//
-//pub struct DataProducerMut<'a> {
-//    data_slice: &'a mut [Data],
-//}
-//
-//impl<'a> From<&'a mut [Data]> for DataProducerMut<'a> {
-//    fn from(data_slice: &'a mut [Data]) -> Self {
-//        Self { data_slice }
-//    }
-//}
-//
-//impl<'a> From<ParDataIter<'a>> for DataProducer<'a> {
-//    fn from(iterator: ParDataIter<'a>) -> Self {
-//        Self {
-//            data_slice: &iterator.data,
-//        }
-//    }
-//}
-//
-//impl<'a, T> From<ParDataIterMut<'a, T>> for DataProducerMut<'a> {
-//    fn from(iterator: ParDataIterMut<'a, T>) -> Self {
-//        Self {
-//            data_slice: &mut iterator.data.particles,
-//        }
-//    }
-//}
-//
-//impl<'a> Producer for DataProducer<'a> {
-//    type Item = &'a Data;
-//    type IntoIter = std::slice::Iter<'a, Data>;
-//
-//    fn into_iter(self) -> Self::IntoIter {
-//        self.data_slice.iter()
-//    }
-//
-//    fn split_at(self, index: usize) -> (Self, Self) {
-//        let (left, right) = self.data_slice.split_at(index);
-//        (
-//            DataProducer { data_slice: left },
-//            DataProducer { data_slice: right },
-//        )
-//    }
-//}
-//
-//impl<'a> Producer for DataProducerMut<'a> {
-//    type Item = &'a mut Data;
-//    type IntoIter = std::slice::IterMut<'a, Data>;
-//
-//    fn into_iter(self) -> Self::IntoIter {
-//        self.data_slice.iter_mut()
-//    }
-//
-//    fn split_at(self, index: usize) -> (Self, Self) {
-//        let (left, right) = self.data_slice.split_at_mut(index);
-//        (Self::from(left), Self::from(right))
-//    }
-//}
-
-impl<T: Optimizer + Clone> Particles<T> {
+impl<T: Optimizer + Clone + std::marker::Send> Particles<T> {
     /// Returns particles whose positions are sampled from
     /// a normal distribution defined by the original start position
     /// plus 1.5 * stepsize.
@@ -1008,7 +825,10 @@ impl<T: Optimizer + Clone> Particles<T> {
                 Method::ParticleSwarm => {
                     temp = 0.0;
                 }
-                Method::BayesianOptimization => todo!()
+                Method::BayesianOptimization => todo!(),
+                Method::PIDAO => {
+                    temp = 0.0;
+                }
             }
             if i == 0 {
                 // if this is the first particle, place it directly at data_vec
@@ -1058,6 +878,10 @@ impl<T: Optimizer + Clone> Particles<T> {
         }
     }
 
+    fn par_iter_mut(&mut self) -> rayon::slice::IterMut<Particle<T>> {
+        self.particles.par_iter_mut()
+    }
+
     fn step(
             &mut self,
             inertia: &f64,
@@ -1068,12 +892,9 @@ impl<T: Optimizer + Clone> Particles<T> {
             accept_from_logit: &bool,
     ) {
         let global_best = self.global_best_position.to_vec();
-        //let obj = self.objective;
-        //let obj = &self.object;
-        for x in self.particles.iter_mut() {
-        //self.par_iter_mut().for_each(|x| {
+        //for x in self.particles.iter_mut() {
+        self.par_iter_mut().for_each(|x| {
             x.step(
-                //obj,
                 &inertia,
                 &local_weight,
                 &global_weight,
@@ -1082,8 +903,8 @@ impl<T: Optimizer + Clone> Particles<T> {
                 method,
                 accept_from_logit,
             );
-        }
-        //});
+        //}
+        });
         self.particles.sort_unstable_by_key(|particle| OrderedFloat(particle.score));
         self.global_best_position = self.particles[0].best_position.to_vec();
         self.global_best_score = self.particles[0].best_score;
@@ -1122,6 +943,53 @@ pub fn logit(p: &f64) -> f64 {
     (p / (1.0-p)).ln()
 }
 
+pub fn pidao<T>(
+        params: Vec<f64>,
+        lower: Vec<f64>,
+        upper: Vec<f64>,
+        step: f64,
+        niter: usize,
+        object: T,
+        accept_from_logit: &bool,
+) -> (Vec<f64>, f64)
+    where
+        T: Optimizer + Clone + std::marker::Send,
+{
+    // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
+    // thus leaving only the jitter to affect particle position
+    let inertia = 0.0;
+    let local_weight = 0.0;
+    let global_weight = 0.0;
+    let n_particles = 1;
+    let temp = 0.0;
+    let initial_jitter = 0.0;
+    let t_adj = 0.0;
+
+    let mut particles = Particles::new(
+        n_particles,
+        params,
+        lower,
+        upper,
+        temp,
+        step,
+        initial_jitter,
+        object,
+        &Method::PIDAO,
+    );
+
+    for _ in 0..niter {
+        particles.step(
+            &inertia,
+            &local_weight,
+            &global_weight,
+            &t_adj,
+            &Method::SimulatedAnnealing,
+            accept_from_logit,
+        );
+    }
+    (particles.global_best_position.to_vec(), particles.global_best_score)
+}
+
 pub fn replica_exchange<T>(
         params: Vec<f64>,
         lower: Vec<f64>,
@@ -1137,7 +1005,7 @@ pub fn replica_exchange<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone,
+        T: Optimizer + Clone + std::marker::Send,
 {
 
     // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
@@ -1186,7 +1054,7 @@ pub fn simulated_annealing<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone,
+        T: Optimizer + Clone + std::marker::Send,
 {
 
     // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
@@ -1234,7 +1102,7 @@ pub fn particle_swarm<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone,
+        T: Optimizer + Clone + std::marker::Send,
 {
     // turn off jitter, leaving only velocity to affect position
     let step = 0.0;
