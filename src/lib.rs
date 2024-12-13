@@ -1122,8 +1122,6 @@ pub fn logit(p: &f64) -> f64 {
     (p / (1.0-p)).ln()
 }
 
-//add_optimizer_impl!(Particle{});
-
 pub fn replica_exchange<T>(
         params: Vec<f64>,
         lower: Vec<f64>,
@@ -1185,7 +1183,6 @@ pub fn simulated_annealing<T>(
         niter: usize,
         t_adj: &f64,
         object: T,
-        //objective: fn(&Vec<f64>) -> f64,
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
@@ -1207,7 +1204,6 @@ pub fn simulated_annealing<T>(
         step,
         0.0, // initial_jitter is 0.0 to place particle exactly at data
         object,
-        //objective,
         &Method::SimulatedAnnealing,
     );
 
@@ -1253,12 +1249,9 @@ pub fn particle_swarm<T>(
         temp,
         step,
         initial_jitter,
-        //objective,
         object,
         &Method::ParticleSwarm,
     );
-
-    //let mut rng = thread_rng();
 
     for _ in 0..niter {
         particles.step(
