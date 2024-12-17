@@ -155,7 +155,7 @@ mod tests {
         );
 
         //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
-        particle.perturb();
+        particle.perturb(&Method::SimulatedAnnealing);
         // particle should have started at [0.0,0.0], and should not have moved
         // with step of 0.0
         particle.position.iter()
@@ -176,7 +176,7 @@ mod tests {
             //&himmelblau,
             &Method::SimulatedAnnealing,
         );
-        particle.perturb();
+        particle.perturb(&Method::SimulatedAnnealing);
         // particle should end NOT at [1.0,1.0], so the sums should differ
         assert_ne!(
             particle.position.iter().sum::<f64>(),
@@ -223,7 +223,7 @@ mod tests {
             .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
         // move the particle
         println!("Position prior to move: {:?}", &particle.position);
-        particle.perturb();
+        particle.perturb(&method);
         // particle should have moved in direction of velocity, but magnitude will
         //  be random
         particle.position.iter()
@@ -625,6 +625,54 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
                     })
             },
             Method::PIDAO => {
+//    def step(self, closure=None):
+//        """Performs a single optimization step.
+//        Arguments:
+//            closure (callable, optional): A closure that reevaluates the model
+//                and returns the loss.
+//        """
+//        loss = None
+//        if closure is not None:
+//            loss = closure()
+//
+//        for group in self.param_groups:
+//            weight_decay = group['weight_decay']
+//            momentum = group['momentum']
+//            dampening = group['dampening']
+//            nesterov = group['nesterov']
+//            lr = group['lr']
+//            kp = group['kp']
+//            ki = group['ki']
+//            kd = group['kd']
+//            for p in group['params']:
+//                if p.grad is None:
+//                    continue
+//                d_p = p.grad.data
+//                if weight_decay != 0:
+//                    d_p.add_(p.data, alpha=weight_decay)
+//                if momentum != 0:
+//                    param_state = self.state[p]
+//                    if 'z_buffer' not in param_state:
+//                        z_buf = param_state['z_buffer'] = torch.zeros_like(p.data)
+//                        z_buf.add_(d_p, alpha=lr)
+//                    else:
+//                        z_buf = param_state['z_buffer']
+//                        z_buf.add_(d_p, alpha=lr)
+//
+//                    if 'y_buffer' not in param_state:
+//                        param_state['y_buffer'] = torch.zeros_like(p.data)
+//                        y_buf = param_state['y_buffer']
+//                        y_buf.add_(d_p, alpha=-lr*(kp - momentum * kd)).add_(z_buf, alpha=-ki * lr)
+//                        y_buf.mul_((1 + momentum * lr) ** -1)
+//                    else:
+//                        y_buf = param_state['y_buffer']
+//                        y_buf.add_(d_p, alpha=-lr * (kp - momentum * kd)).add_(z_buf, alpha=-ki * lr)
+//                        y_buf.mul_((1 + momentum * lr) ** -1)
+//
+//                    d_p = torch.zeros_like(p.data).add_(y_buf, alpha=lr).add_(d_p, alpha=-kd*lr)
+//                p.data.add_(d_p)
+//
+//        return loss
                 todo!()
             },
             _ => (),
@@ -634,6 +682,9 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     fn step(
             &mut self,
             inertia: &f64,
+            kp: &f64,
+            ki: &f64,
+            kd: &f64,
             local_weight: &f64,
             global_weight: &f64,
             global_best_position: &Vec<f64>,
@@ -651,10 +702,13 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
             global_weight,
             global_best_position,
             method,
+            kp,
+            ki,
+            id,
         );
         // move the particle. Takes into account stepsize for jitter in a single
         //  dimension, and velocity over all dimensions.
-        self.perturb();
+        self.perturb(method);
 
         let score = self.evaluate(); //, rec_db, kmer, max_count, alpha);
 
@@ -921,6 +975,9 @@ impl<T: Optimizer + Clone + std::marker::Send> Particles<T> {
     fn step(
             &mut self,
             inertia: &f64,
+            kp: &f64,
+            ki: &f64,
+            kd: &f64,
             local_weight: &f64,
             global_weight: &f64,
             t_adj: &f64,
@@ -981,6 +1038,9 @@ pub fn logit(p: &f64) -> f64 {
 
 pub fn pidao<T>(
         params: Vec<f64>,
+        kp: &f64,
+        ki: &f64,
+        kd: &f64,
         lower: Vec<f64>,
         upper: Vec<f64>,
         step: f64,
