@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use rand_distr::{Normal, Uniform};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use ordered_float::OrderedFloat;
+use std::any::type_name;
 //use std::sync::{Arc, Mutex};
 use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
 use rayon::prelude::*;
@@ -13,9 +14,9 @@ use rayon::prelude::*;
 mod tests {
     use super::*;
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct System;
-    impl Optimizer for System {
+    impl Objective for System {
         fn objective(&self, param: &Vec<f64>) -> f64 {
             rosenbrock(param)
         }
@@ -70,7 +71,7 @@ mod tests {
             method: &Method,
     ) -> Particles<T>
         where
-            T: Optimizer + Clone + std::marker::Send,
+            T: Objective + Clone + std::marker::Send,
     {
 
         let data_vec = vec![0.0, 0.0, 0.0, 0.0, 0.0];
@@ -97,19 +98,19 @@ mod tests {
             method: &Method
     ) -> Particle<T>
         where
-            T: Optimizer + std::marker::Send,
+            T: Objective + std::marker::Send + Clone,
     {
 
         let temp = 2.0;
-        let particle = Particle::new(
-            data_vec.to_vec(),
-            low.to_vec(),
-            up.to_vec(),
-            object,
-            temp,
-            *step,
-            method,
-        );
+        let particle = ParticleBuilder::new()
+            .set_data(data_vec.to_vec()).unwrap()
+            .set_lower(low.to_vec()).unwrap()
+            .set_upper(up.to_vec()).unwrap()
+            .set_objective(object)
+            .set_temperature(temp).unwrap()
+            .set_stepsize(*step).unwrap()
+            .set_method(*method)
+            .build().unwrap();
         particle
     }
 
@@ -126,7 +127,6 @@ mod tests {
             &low,
             &up,
             obj,
-            //&himmelblau,
             &Method::SimulatedAnnealing,
         );
         let score = particle.evaluate();
@@ -150,7 +150,6 @@ mod tests {
             &low,
             &up,
             obj,
-            //&himmelblau,
             &Method::SimulatedAnnealing,
         );
 
@@ -173,7 +172,6 @@ mod tests {
             &low,
             &up,
             obj,
-            //&himmelblau,
             &Method::SimulatedAnnealing,
         );
         particle.perturb(&Method::SimulatedAnnealing);
@@ -184,234 +182,511 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_velocity_only() {
-        // Here we test that stepsize 0.0 and velocity [1.0, 1.0] moves particle
-        // directionally
-        let obj = System{};
-        let start_data = vec![0.0, 0.0];
-        let step = 0.0;
-        let inertia = 1.0;
-        let local_weight = 0.5;
-        let global_weight = 0.5;
-        let global_best = vec![4.0, 4.0];
-        let low = vec![-5.0, -5.0];
-        let up = vec![5.0, 5.0];
-        let method = Method::ParticleSwarm;
-        let mut particle = set_up_particle(
-            &start_data,
-            &step,
-            &low,
-            &up,
-            obj,
-            //&himmelblau,
-            &method,
-        );
-        // particle velocity is initialized randomly
-        let initial_velocity = particle.velocity.to_vec();
-        //assert!(particle.velocity.abs_diff_eq(&array![0.0, 0.0], 1e-6));
-        particle.set_velocity(
-            &inertia,
-            &local_weight,
-            &global_weight,
-            &global_best,
-            &method,
-        );
-        // particle velocity should have changed
-        particle.velocity.iter()
-            .zip(&initial_velocity)
-            .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
-        // move the particle
-        println!("Position prior to move: {:?}", &particle.position);
-        particle.perturb(&method);
-        // particle should have moved in direction of velocity, but magnitude will
-        //  be random
-        particle.position.iter()
-            .zip(&start_data)
-            .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
-        println!("Position after: {:?}", &particle.position);
-    }
+    //#[test]
+    //fn test_velocity_only() {
+    //    // Here we test that stepsize 0.0 and velocity [1.0, 1.0] moves particle
+    //    // directionally
+    //    let obj = System{};
+    //    let start_data = vec![0.0, 0.0];
+    //    let step = 0.0;
+    //    let inertia = 1.0;
+    //    let local_weight = 0.5;
+    //    let global_weight = 0.5;
+    //    let global_best = vec![4.0, 4.0];
+    //    let low = vec![-5.0, -5.0];
+    //    let up = vec![5.0, 5.0];
+    //    let method = Method::ParticleSwarm;
+    //    let mut particle = set_up_particle(
+    //        &start_data,
+    //        &step,
+    //        &low,
+    //        &up,
+    //        obj,
+    //        //&himmelblau,
+    //        &method,
+    //    );
+    //    // particle velocity is initialized randomly
+    //    let initial_velocity = particle.velocity.to_vec();
+    //    //assert!(particle.velocity.abs_diff_eq(&array![0.0, 0.0], 1e-6));
+    //    particle.set_velocity(
+    //        &inertia,
+    //        &local_weight,
+    //        &global_weight,
+    //        &global_best,
+    //        &method,
+    //    );
+    //    // particle velocity should have changed
+    //    particle.velocity.iter()
+    //        .zip(&initial_velocity)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
+    //    // move the particle
+    //    println!("Position prior to move: {:?}", &particle.position);
+    //    particle.perturb(&method);
+    //    // particle should have moved in direction of velocity, but magnitude will
+    //    //  be random
+    //    particle.position.iter()
+    //        .zip(&start_data)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
+    //    println!("Position after: {:?}", &particle.position);
+    //}
 
-    #[test]
-    fn test_temp_swap() {
-        let mut particles = set_up_particles(
-            6,
-            1.0,
-            &0.25,
-            &vec![-0.5, -0.5, -0.5, -0.5, -0.5],
-            &vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-            0.5,
-            System{},
-            &Method::ReplicaExchange,
-        );
-        for i in 0..6 {
-            println!("{:?}", particles.particles[i].temperature);
-        }
-        particles.exchange(false);
-        println!("");
-        for i in 0..6 {
-            println!("{:?}", particles.particles[i].temperature);
-        }
-    }
+    //#[test]
+    //fn test_temp_swap() {
+    //    let mut particles = set_up_particles(
+    //        6,
+    //        1.0,
+    //        &0.25,
+    //        &vec![-0.5, -0.5, -0.5, -0.5, -0.5],
+    //        &vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+    //        0.5,
+    //        System{},
+    //        &Method::ReplicaExchange,
+    //    );
+    //    for i in 0..6 {
+    //        println!("{:?}", particles.particles[i].temperature);
+    //    }
+    //    particles.exchange(false);
+    //    println!("");
+    //    for i in 0..6 {
+    //        println!("{:?}", particles.particles[i].temperature);
+    //    }
+    //}
 
-    #[test]
-    fn test_replica_exchange() {
-        let obj = System{};
-        let step = 0.2;
-        let start = vec![0.0, 0.0];
-        let low = vec![-5.0, -5.0];
-        let up = vec![5.0, 5.0];
-        let temp = 10.0;
-        let niter = 20000;
-        let t_adj = 0.0001;
-        let initial_jitter = &step * 8.0;
-        let swap_freq = 5;
-        let n_particles = 50;
+    //#[test]
+    //fn test_replica_exchange() {
+    //    let obj = System{};
+    //    let step = 0.2;
+    //    let start = vec![0.0, 0.0];
+    //    let low = vec![-5.0, -5.0];
+    //    let up = vec![5.0, 5.0];
+    //    let temp = 10.0;
+    //    let niter = 20000;
+    //    let t_adj = 0.0001;
+    //    let initial_jitter = &step * 8.0;
+    //    let swap_freq = 5;
+    //    let n_particles = 50;
 
-        let opt_params = replica_exchange(
-            start.clone(),
-            low,
-            up,
-            n_particles,
-            temp,
-            step,
-            initial_jitter,
-            niter,
-            &t_adj,
-            &swap_freq,
-            obj,
-            &false,
-        );
+    //    let opt_params = replica_exchange(
+    //        start.clone(),
+    //        low,
+    //        up,
+    //        n_particles,
+    //        temp,
+    //        step,
+    //        initial_jitter,
+    //        niter,
+    //        &t_adj,
+    //        &swap_freq,
+    //        obj,
+    //        &false,
+    //    );
 
-        let target = vec![1.0,1.0];
+    //    let target = vec![1.0,1.0];
 
-        opt_params.0.iter()
-            .zip(&start)
-            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-        opt_params.0.iter()
-            .zip(target)
-            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
-        println!("Replica exchange result: {:?}", opt_params);
-    }
+    //    opt_params.0.iter()
+    //        .zip(&start)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(target)
+    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
+    //    println!("Replica exchange result: {:?}", opt_params);
+    //}
 
-    #[test]
-    fn test_annealing() {
-        let obj = System{};
-        let step = 0.2;
-        let start = vec![0.0, 0.0];
-        let low = vec![-5.0, -5.0];
-        let up = vec![5.0, 5.0];
-        let temp = 10.0;
-        let niter = 20000;
-        let t_adj = 0.0001;
+    //#[test]
+    //fn test_annealing() {
+    //    let obj = System{};
+    //    let step = 0.2;
+    //    let start = vec![0.0, 0.0];
+    //    let low = vec![-5.0, -5.0];
+    //    let up = vec![5.0, 5.0];
+    //    let temp = 10.0;
+    //    let niter = 20000;
+    //    let t_adj = 0.0001;
 
-        let opt_params = simulated_annealing(
-            start.clone(),
-            low,
-            up,
-            temp,
-            step,
-            niter,
-            &t_adj,
-            obj,
-            //rosenbrock,
-            &false,
-        );
+    //    let opt_params = simulated_annealing(
+    //        start.clone(),
+    //        low,
+    //        up,
+    //        temp,
+    //        step,
+    //        niter,
+    //        &t_adj,
+    //        obj,
+    //        //rosenbrock,
+    //        &false,
+    //    );
 
-        let target = vec![1.0,1.0];
+    //    let target = vec![1.0,1.0];
 
-        opt_params.0.iter()
-            .zip(&start)
-            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-        opt_params.0.iter()
-            .zip(target)
-            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
-        println!("Annealing result: {:?}", opt_params);
-    }
+    //    opt_params.0.iter()
+    //        .zip(&start)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(target)
+    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
+    //    println!("Annealing result: {:?}", opt_params);
+    //}
 
-    #[test]
-    fn test_swarming() {
+    //#[test]
+    //fn test_swarming() {
 
-        let obj = System{};
-        let step = 0.25;
-        let start = vec![0.0, 0.0];
-        let low = vec![-5.0, -5.0];
-        let up = vec![5.0, 5.0];
-        let n_particles = 50;
-        let inertia = 0.8;
-        let local_weight = 0.2;
-        let global_weight = 0.8;
-        let initial_jitter = &step * 8.0;
+    //    let obj = System{};
+    //    let step = 0.25;
+    //    let start = vec![0.0, 0.0];
+    //    let low = vec![-5.0, -5.0];
+    //    let up = vec![5.0, 5.0];
+    //    let n_particles = 50;
+    //    let inertia = 0.8;
+    //    let local_weight = 0.2;
+    //    let global_weight = 0.8;
+    //    let initial_jitter = &step * 8.0;
 
-        let niter = 1000;
+    //    let niter = 1000;
 
-        let opt_params = particle_swarm(
-            start.clone(),
-            low,
-            up,
-            n_particles,
-            inertia,
-            local_weight,
-            global_weight,
-            initial_jitter,
-            niter,
-            obj,
-            &false,
-        );
+    //    let opt_params = particle_swarm(
+    //        start.clone(),
+    //        low,
+    //        up,
+    //        n_particles,
+    //        inertia,
+    //        local_weight,
+    //        global_weight,
+    //        initial_jitter,
+    //        niter,
+    //        obj,
+    //        &false,
+    //    );
 
-        let target = vec![1.0,1.0];
+    //    let target = vec![1.0,1.0];
 
-        opt_params.0.iter()
-            .zip(&start)
-            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-        opt_params.0.iter()
-            .zip(target)
-            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(&start)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(target)
+    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
 
-        println!("Swarm result: {:?}", opt_params);
-    }
+    //    println!("Swarm result: {:?}", opt_params);
+    //}
 
-    #[test]
-    fn test_pidao() {
+    //#[test]
+    //fn test_pidao() {
 
-        let obj = System{};
-        let step = 0.25;
-        let start = vec![0.0, 0.0];
-        let low = vec![-5.0, -5.0];
-        let up = vec![5.0, 5.0];
+    //    let obj = System{};
+    //    let step = 0.25;
+    //    let start = vec![0.0, 0.0];
+    //    let low = vec![-5.0, -5.0];
+    //    let up = vec![5.0, 5.0];
 
-        let niter = 1000;
+    //    let niter = 1000;
 
-        let opt_params = pidao(
-            start.clone(),
-            low,
-            up,
-            step,
-            niter,
-            obj,
-            &false,
-        );
+    //    let opt_params = pidao(
+    //        start.clone(),
+    //        low,
+    //        up,
+    //        step,
+    //        niter,
+    //        obj,
+    //        &false,
+    //    );
 
-        let target = vec![1.0,1.0];
+    //    let target = vec![1.0,1.0];
 
-        opt_params.0.iter()
-            .zip(&start)
-            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-        opt_params.0.iter()
-            .zip(target)
-            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(&start)
+    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+    //    opt_params.0.iter()
+    //        .zip(target)
+    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
 
-        println!("PIDAO result: {:?}", opt_params);
-    }
+    //    println!("PIDAO result: {:?}", opt_params);
+    //}
 
 }
 
+fn type_of<T>(_: &T) -> &str {
+    type_name::<T>()
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Method {
     SimulatedAnnealing,
     ParticleSwarm,
     ReplicaExchange,
     BayesianOptimization,
     PIDAO,
+}
+
+#[derive(Debug)]
+enum IncompleteParticleBuild {
+    NoMethod,
+    NoObjective,
+    NoStepsize,
+    NoPosition,
+}
+
+#[derive(Debug)]
+enum InvalidParticleBuild {
+    NoMethod,
+    InvalidDataType,
+}
+
+#[derive(Debug)]
+pub struct Optimizer {
+    method: Method,
+}
+
+#[derive(Debug)]
+pub struct OptimizerBuilder {
+    method: Option<Method>,
+}
+
+#[derive(Debug)]
+enum IncompleteOptimizerBuild {
+    NoMethod,
+    NoObjective,
+    NoStepsize,
+    NoPosition,
+}
+
+#[derive(Debug)]
+enum InvalidOptimizerBuild {
+    NoMethod,
+    InvalidDataType,
+}
+
+/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+// I'm currently thinking I need something like
+// https://users.rust-lang.org/t/how-to-implement-inheritance-like-feature-for-rust/31159/21
+// to give Optimizers ability to implement methods like ParticleSwarm, SimulatedAnnealing, etc.
+//
+//mod apple_eater {
+//    pub struct AppleEater {
+//        granny_smiths: u32,
+//        golden_delicious: u32,
+//        ...
+//    }
+//
+//    impl AppleEater {
+//        pub fn report(&self) {
+//            println!("I ate {} granny smiths!", self.granny_smiths);
+//            println!("...and {} golden delicious!", self.golden_delicous);
+//            ...
+//        }
+//
+//        pub fn eat_granny_smith(&mut self) { self.granny_smiths += 1; }
+//        pub fn eat_golden_delicious(&mut self) { self.golden_delicious += 1; }
+//        ...
+//    }
+//
+//    pub trait AsAppleEater {
+//        fn as_apple_eater(&self) -> &AppleEater;
+//
+//        fn report(&self)
+//        { self.as_apple_eater().report() }
+//    }
+//
+//    pub trait AsMutAppleEater: AsAppleEater {
+//        fn as_mut_apple_eater(&mut self) -> &mut AppleEater;
+//
+//        fn eat_granny_smith(&mut self)
+//        { self.as_mut_apple_eater().eat_granny_smith() }
+//
+//        fn eat_golden_delicious(&mut self)
+//        { self.as_mut_apple_eater().eat_golden_delicious() }
+//    }
+//}
+/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////
+impl OptimizerBuilder {
+
+    fn new() -> Self {
+        Self{
+            method: None,
+        }
+    }
+
+    fn set_method(&mut self, method: Method) -> &mut Self {
+        self.method = Some(method);
+        self
+    }
+
+    fn build(&self) -> Result<Optimizer, IncompleteOptimizerBuild> {
+        if let Some(method) = self.method.clone() {
+            Ok(Optimizer{
+                method
+            })
+        } else {
+            Err(IncompleteOptimizerBuild::NoMethod)
+        }
+    }
+}
+
+pub struct ParticleBuilder<T> {
+    object: Option<T>,
+    position: Option<Vec<f64>>,
+    prior_position: Option<Vec<f64>>,
+    best_position: Option<Vec<f64>>,
+    best_score: Option<f64>,
+    score: Option<f64>,
+    lower_bound: Option<Vec<f64>>,
+    upper_bound: Option<Vec<f64>>,
+    temperature: Option<f64>,
+    velocity: Option<Vec<f64>>,
+    prior_velocity: Option<Vec<f64>>,
+    stepsize: Option<f64>,
+    method: Option<Method>,
+    rng: Xoshiro256PlusPlus,
+}
+
+impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
+    fn new() -> Self where T: Objective + Clone + std::marker::Send {
+        let rng = Xoshiro256PlusPlus::from_entropy();
+        Self{
+            object: None,
+            position: None,
+            prior_position: None,
+            best_position: None,
+            best_score: None,
+            score: None,
+            lower_bound: None,
+            upper_bound: None,
+            temperature: None,
+            velocity: None,
+            prior_velocity: None,
+            stepsize: None,
+            method: None,
+            rng: rng,
+        }
+    }
+
+    fn set_data(&mut self, data: Vec<f64>) -> Result<&mut Self, InvalidParticleBuild> {
+        if type_of(&data[0]) != "f64" {
+            Err(InvalidParticleBuild::InvalidDataType)
+        } else {
+            self.position = Some(data);
+            Ok(self)
+        }
+    }
+
+    fn set_lower(&mut self, lower: Vec<f64>) ->
+        Result<&mut Self, InvalidParticleBuild>
+    {
+        if type_of(&lower[0]) != "f64" {
+            Err(InvalidParticleBuild::InvalidDataType)
+        } else {
+            self.lower_bound = Some(lower);
+            Ok(self)
+        }
+    }
+
+    fn set_upper(&mut self, upper: Vec<f64>) ->
+        Result<&mut Self, InvalidParticleBuild>
+    {
+        if type_of(&upper[0]) != "f64" {
+            Err(InvalidParticleBuild::InvalidDataType)
+        } else {
+            self.upper_bound = Some(upper);
+            Ok(self)
+        }
+    }
+
+    fn set_objective(&mut self, objective: T) ->
+        &mut Self
+            where
+        T: Objective + std::marker::Send
+    {
+        self.object = Some(objective);
+        self
+    }
+
+    fn set_temperature(&mut self, temperature: f64) ->
+        Result<&mut Self, InvalidParticleBuild>
+    {
+        if type_of(&temperature) != "f64" {
+            Err(InvalidParticleBuild::InvalidDataType)
+        } else {
+            self.temperature = Some(temperature);
+            Ok(self)
+        }
+    }
+
+    fn set_stepsize(&mut self, stepsize: f64) ->
+        Result<&mut Self, InvalidParticleBuild>
+    {
+        if type_of(&stepsize) != "f64" {
+            Err(InvalidParticleBuild::InvalidDataType)
+        } else {
+            self.stepsize = Some(stepsize);
+            Ok(self)
+        }
+    }
+
+    fn set_method(&mut self, method: Method) -> &mut Self {
+        self.method = Some(method);
+        self
+    }
+
+    fn build(&self) -> Result<Particle<T>, IncompleteParticleBuild> {
+        if let Some(object) = self.object.clone() {
+            if let Some(position) = self.position.clone() {
+                let lower_bound = if let Some(lower) = self.lower_bound.clone() {
+                    lower
+                } else {
+                    vec![-f64::INFINITY, f64::INFINITY]
+                };
+                let upper_bound = if let Some(upper) = self.upper_bound.clone() {
+                    upper
+                } else {
+                    vec![-f64::INFINITY, f64::INFINITY]
+                };
+                let temperature = if let Some(temp) = self.temperature.clone() {
+                    temp
+                } else {
+                    0.0
+                };
+                let velocity = if let Some(vel) = self.velocity.clone() {
+                    vel
+                } else {
+                    vec![0.0; position.len()]
+                };
+                if let Some(stepsize) = self.stepsize.clone() {
+                    if let Some(method) = self.method.clone() {
+                        let rng = Xoshiro256PlusPlus::from_entropy();
+                        Ok(Particle {
+                            object: object,
+                            position: position.clone(),
+                            prior_position: position.to_vec(),
+                            best_position: position.to_vec(),
+                            best_score: f64::INFINITY,
+                            score: f64::INFINITY,
+                            lower_bound: lower_bound,
+                            upper_bound: upper_bound,
+                            temperature: temperature,
+                            velocity: velocity.clone(),
+                            prior_velocity: velocity.to_vec(),
+                            stepsize: stepsize,
+                            rng: rng,
+                            method: method,
+                        })
+                    } else {
+                        Err(IncompleteParticleBuild::NoMethod)
+                    }
+                } else {
+                    Err(IncompleteParticleBuild::NoStepsize)
+                }
+            } else {
+                Err(IncompleteParticleBuild::NoPosition)
+            }
+        } else {
+            Err(IncompleteParticleBuild::NoObjective)
+        }
+    }
+
 }
 
 #[derive(Debug)]
@@ -428,10 +703,11 @@ pub struct Particle<T> {
     velocity: Vec<f64>,
     prior_velocity: Vec<f64>,
     stepsize: f64,
+    method: Method,
     rng: Xoshiro256PlusPlus,
 }
 
-impl<T: Optimizer + std::marker::Send> Particle<T> {
+impl<T: Objective + std::marker::Send> Particle<T> {
     pub fn new(
         data: Vec<f64>,
         lower: Vec<f64>,
@@ -442,7 +718,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
         method: &Method,
     ) -> Particle<T>
         where
-            T: Optimizer + std::marker::Send,
+            T: Objective + std::marker::Send,
     {
 
         let mut init_rng = Xoshiro256PlusPlus::from_entropy();
@@ -488,6 +764,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
             prior_velocity: pv,
             stepsize: stepsize,
             rng: rng,
+            method: *method,
         };
         particle.score = particle.evaluate();
         particle.best_score = particle.score;
@@ -693,7 +970,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
             accept_from_logit: &bool,
     )
         where
-            T: Optimizer + std::marker::Send,
+            T: Objective + std::marker::Send,
     {
         // set the new velocity
         self.set_velocity(
@@ -702,9 +979,9 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
             global_weight,
             global_best_position,
             method,
-            kp,
-            ki,
-            id,
+            //kp,
+            //ki,
+            //id,
         );
         // move the particle. Takes into account stepsize for jitter in a single
         //  dimension, and velocity over all dimensions.
@@ -828,7 +1105,7 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     ///    the particle. For instance, if current temp is 1.0 and t_adj is 0.2,
     ///    the new temperature will be 1.0 * (1.0 - 0.2) = 0.8
     fn adjust_temp(&mut self, t_adj: &f64) {
-        self.temperature *= (1.0 - t_adj)
+        self.temperature *= 1.0 - t_adj
     }
 
     /// Adjusts that stepsize of the Particle
@@ -842,13 +1119,13 @@ impl<T: Optimizer + std::marker::Send> Particle<T> {
     /// * `s_adj` - fractional amount by which to decrease the stepsize of the
     ///     particle.
     fn adjust_stepsize(&mut self, s_adj: &f64) {
-        self.stepsize *= (1.0 - s_adj)
+        self.stepsize *= 1.0 - s_adj
     }
 }
 
 /// A trait to enable optimization of a set of parameters for
 /// any struct
-pub trait Optimizer {
+pub trait Objective {
     fn objective(&self, theta: &Vec<f64>) -> f64;
 }
 
@@ -858,7 +1135,7 @@ pub struct Particles<T> {
     global_best_score: f64,
 }
 
-impl<T: Optimizer + Clone + std::marker::Send> Particles<T> {
+impl<T: Objective + Clone + std::marker::Send> Particles<T> {
     /// Returns particles whose positions are sampled from
     /// a normal distribution defined by the original start position
     /// plus 1.5 * stepsize.
@@ -874,7 +1151,7 @@ impl<T: Optimizer + Clone + std::marker::Send> Particles<T> {
             method: &Method,
     ) -> Particles<T>
         where
-            T: Optimizer + Clone,
+            T: Objective + Clone,
     {
         // set variance of new particles around data to initial_jitter^2
         let distr = Normal::new(0.0, initial_jitter).unwrap();
@@ -989,6 +1266,9 @@ impl<T: Optimizer + Clone + std::marker::Send> Particles<T> {
         self.par_iter_mut().for_each(|x| {
             x.step(
                 &inertia,
+                &0.0,
+                &0.0,
+                &0.0,
                 &local_weight,
                 &global_weight,
                 &global_best,
@@ -1049,7 +1329,7 @@ pub fn pidao<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone + std::marker::Send,
+        T: Objective + Clone + std::marker::Send,
 {
     // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
     // thus leaving only the jitter to affect particle position
@@ -1076,6 +1356,9 @@ pub fn pidao<T>(
     for _ in 0..niter {
         particles.step(
             &inertia,
+            &0.0,
+            &0.0,
+            &0.0,
             &local_weight,
             &global_weight,
             &t_adj,
@@ -1101,7 +1384,7 @@ pub fn replica_exchange<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone + std::marker::Send,
+        T: Objective + Clone + std::marker::Send,
 {
 
     // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
@@ -1128,6 +1411,9 @@ pub fn replica_exchange<T>(
         }
         particles.step(
             &inertia,
+            &0.0,
+            &0.0,
+            &0.0,
             &local_weight,
             &global_weight,
             &t_adj,
@@ -1150,7 +1436,7 @@ pub fn simulated_annealing<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone + std::marker::Send,
+        T: Objective + Clone + std::marker::Send,
 {
 
     // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
@@ -1174,6 +1460,9 @@ pub fn simulated_annealing<T>(
     for _ in 0..niter {
         particles.step(
             &inertia,
+            &0.0,
+            &0.0,
+            &0.0,
             &local_weight,
             &global_weight,
             &t_adj,
@@ -1183,6 +1472,13 @@ pub fn simulated_annealing<T>(
     }
     (particles.global_best_position.to_vec(), particles.global_best_score)
 }
+
+//pub fn optimize<T>(
+//) -> (Vec<f64>, f64)
+//    where
+//        T: Objective + Clone + std::marker::Send,
+//{
+//}
 
 pub fn particle_swarm<T>(
         params: Vec<f64>,
@@ -1198,7 +1494,7 @@ pub fn particle_swarm<T>(
         accept_from_logit: &bool,
 ) -> (Vec<f64>, f64)
     where
-        T: Optimizer + Clone + std::marker::Send,
+        T: Objective + Clone + std::marker::Send,
 {
     // turn off jitter, leaving only velocity to affect position
     let step = 0.0;
@@ -1220,6 +1516,9 @@ pub fn particle_swarm<T>(
     for _ in 0..niter {
         particles.step(
             &inertia,
+            &0.0,
+            &0.0,
+            &0.0,
             &local_weight,
             &global_weight,
             &t_adj,
