@@ -431,30 +431,6 @@ enum InvalidParticleBuild {
     InvalidDataType,
 }
 
-#[derive(Debug)]
-pub struct Optimizer {
-    method: Method,
-}
-
-#[derive(Debug)]
-pub struct OptimizerBuilder {
-    method: Option<Method>,
-}
-
-#[derive(Debug)]
-enum IncompleteOptimizerBuild {
-    NoMethod,
-    NoObjective,
-    NoStepsize,
-    NoPosition,
-}
-
-#[derive(Debug)]
-enum InvalidOptimizerBuild {
-    NoMethod,
-    InvalidDataType,
-}
-
 /////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////
@@ -502,12 +478,87 @@ enum InvalidOptimizerBuild {
 /////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////
-impl OptimizerBuilder {
+//
+// Traits common across Particle variants:
+//   position
+//   prior_position
+//   score
+//   prior_score
+//   best_score
+// Methods common across Particle variants:
+//   step
+//   
+
+// Traits common across Optimizer variants:
+//   Vec<Particle>
+//   best_score
+//   position_at_best_score
+// Methods common across Optimizer variants:
+//   optimize
+//   step
+struct ParticleSwarm {
+}
+struct SimulatedAnnealing {
+}
+struct ReplicaExchange {
+}
+struct BayesianOptimization {
+}
+struct PIDAO {
+}
+
+trait Optimizer<T> {
+    fn step(&mut self) -> ();
+}
+
+impl<T> Optimizer<T> for ParticleSwarm {
+    fn step(&mut self) {}
+}
+
+#[derive(Debug)]
+pub struct OptimizerBuilder<T> {
+    method: Option<Method>,
+    particle_number: Option<usize>,
+    object: Option<T>,
+    position: Option<Vec<f64>>,
+    lower_bound: Option<Vec<f64>>,
+    upper_bound: Option<Vec<f64>>,
+    temperature: Option<f64>,
+    stepsize: Option<f64>,
+}
+
+#[derive(Debug)]
+enum IncompleteOptimizerBuild {
+    NoMethod,
+    NoObjective,
+    NoStepsize,
+    NoPosition,
+}
+
+#[derive(Debug)]
+enum InvalidOptimizerBuild {
+    NoMethod,
+    InvalidDataType,
+}
+
+impl<T: Objective + std::marker::Send + Clone> OptimizerBuilder<T> {
 
     fn new() -> Self {
         Self{
             method: None,
+            particle_number: None,
+            object: None,
+            position: None,
+            lower_bound: None,
+            upper_bound: None,
+            temperature: None,
+            stepsize: None,
         }
+    }
+
+    fn set_particle_number(&mut self, number: usize) -> &mut Self {
+        self.particle_number = Some(number);
+        self
     }
 
     fn set_method(&mut self, method: Method) -> &mut Self {
@@ -515,11 +566,104 @@ impl OptimizerBuilder {
         self
     }
 
-    fn build(&self) -> Result<Optimizer, IncompleteOptimizerBuild> {
+    fn set_data(&mut self, data: Vec<f64>) -> &mut Self {
+        self.position = Some(data);
+        self
+    }
+
+    fn set_lower(&mut self, lower: Vec<f64>) -> &mut Self {
+        self.lower_bound = Some(lower);
+        self
+    }
+
+    fn set_upper(&mut self, upper: Vec<f64>) -> &mut Self {
+        self.upper_bound = Some(upper);
+        self
+    }
+
+    fn set_objective(&mut self, objective: T) ->
+        &mut Self
+            where
+        T: Objective + std::marker::Send
+    {
+        self.object = Some(objective);
+        self
+    }
+
+    fn set_temperature(&mut self, temperature: f64) -> &mut Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    fn set_stepsize(&mut self, stepsize: f64) -> &mut Self {
+        self.stepsize = Some(stepsize);
+        self
+    }
+
+    fn build(&self) ->
+        Result<Box<impl Optimizer<T>>, IncompleteOptimizerBuild>
+    {
         if let Some(method) = self.method.clone() {
-            Ok(Optimizer{
-                method
-            })
+            let step = if let Some(stepsize) = self.stepsize.clone() {
+                stepsize
+            } else {
+                // should set to some reasonable number, for now I'm just using 0.25
+                0.25
+            };
+            if let Some(data_vec) = self.position.clone() {
+                let low = if let Some(lower) = self.lower_bound.clone() {
+                    lower
+                } else {
+                    vec![-f64::INFINITY; data_vec.len()]
+                };
+                let up = if let Some(upper) = self.upper_bound.clone() {
+                    upper
+                } else {
+                    vec![f64::INFINITY; data_vec.len()]
+                };
+                let temp = if let Some(temperature) = self.temperature.clone() {
+                    temperature
+                } else {
+                    0.0
+                };
+                if let Some(object) = self.object.clone() {
+                    let particles = if let Some(particle_number) = self.particle_number {
+                        let mut particles: Vec<Particle<T>> = Vec::new();
+                        for _ in 0..particle_number {
+                            let particle = ParticleBuilder::new()
+                                .set_data(data_vec.to_vec()).unwrap()
+                                .set_lower(low.to_vec()).unwrap()
+                                .set_upper(up.to_vec()).unwrap()
+                                .set_objective(object.clone())
+                                .set_temperature(temp).unwrap()
+                                .set_stepsize(step).unwrap()
+                                .set_method(method)
+                                .build().unwrap();
+                            particles.push(particle);
+                        }
+                        particles
+                    } else {
+                        let mut particles: Vec<Particle<T>> = Vec::new();
+                        let particle = ParticleBuilder::new()
+                            .set_data(data_vec.to_vec()).unwrap()
+                            .set_lower(low.to_vec()).unwrap()
+                            .set_upper(up.to_vec()).unwrap()
+                            .set_objective(object)
+                            .set_temperature(temp).unwrap()
+                            .set_stepsize(step).unwrap()
+                            .set_method(method)
+                            .build().unwrap();
+                        particles.push(particle);
+                        particles
+                    };
+
+                    Ok(Box::new(ParticleSwarm{}))
+                } else {
+                    Err(IncompleteOptimizerBuild::NoObjective)
+                }
+            } else {
+                Err(IncompleteOptimizerBuild::NoPosition)
+            }
         } else {
             Err(IncompleteOptimizerBuild::NoMethod)
         }
@@ -529,15 +673,11 @@ impl OptimizerBuilder {
 pub struct ParticleBuilder<T> {
     object: Option<T>,
     position: Option<Vec<f64>>,
-    prior_position: Option<Vec<f64>>,
-    best_position: Option<Vec<f64>>,
-    best_score: Option<f64>,
     score: Option<f64>,
     lower_bound: Option<Vec<f64>>,
     upper_bound: Option<Vec<f64>>,
     temperature: Option<f64>,
     velocity: Option<Vec<f64>>,
-    prior_velocity: Option<Vec<f64>>,
     stepsize: Option<f64>,
     method: Option<Method>,
     rng: Xoshiro256PlusPlus,
@@ -549,15 +689,11 @@ impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
         Self{
             object: None,
             position: None,
-            prior_position: None,
-            best_position: None,
-            best_score: None,
             score: None,
             lower_bound: None,
             upper_bound: None,
             temperature: None,
             velocity: None,
-            prior_velocity: None,
             stepsize: None,
             method: None,
             rng: rng,
@@ -637,12 +773,12 @@ impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
                 let lower_bound = if let Some(lower) = self.lower_bound.clone() {
                     lower
                 } else {
-                    vec![-f64::INFINITY, f64::INFINITY]
+                    vec![-f64::INFINITY; position.len()]
                 };
                 let upper_bound = if let Some(upper) = self.upper_bound.clone() {
                     upper
                 } else {
-                    vec![-f64::INFINITY, f64::INFINITY]
+                    vec![f64::INFINITY; position.len()]
                 };
                 let temperature = if let Some(temp) = self.temperature.clone() {
                     temp
@@ -657,7 +793,7 @@ impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
                 if let Some(stepsize) = self.stepsize.clone() {
                     if let Some(method) = self.method.clone() {
                         let rng = Xoshiro256PlusPlus::from_entropy();
-                        Ok(Particle {
+                        let mut particle = Particle {
                             object: object,
                             position: position.clone(),
                             prior_position: position.to_vec(),
@@ -672,7 +808,10 @@ impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
                             stepsize: stepsize,
                             rng: rng,
                             method: method,
-                        })
+                        };
+                        particle.score = particle.evaluate();
+                        particle.best_score = particle.score;
+                        Ok(particle)
                     } else {
                         Err(IncompleteParticleBuild::NoMethod)
                     }
@@ -686,7 +825,6 @@ impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
             Err(IncompleteParticleBuild::NoObjective)
         }
     }
-
 }
 
 #[derive(Debug)]
