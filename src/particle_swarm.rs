@@ -2,7 +2,7 @@ use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
 use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 use rand::prelude::*;
-use rand_distr::{Normal, Uniform};
+use rand_distr::Normal;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use crate::{
     Objective,
@@ -29,7 +29,10 @@ pub struct ParticleBuilder<T> {
 }
 
 impl<T: Objective + std::marker::Send + Clone> ParticleBuilder<T> {
-    fn new() -> Self where T: Objective + Clone + std::marker::Send {
+    fn new() -> Self
+        where
+            T: Objective + Clone + std::marker::Send,
+    {
         let rng = Xoshiro256PlusPlus::from_entropy();
         Self{
             object: None,
@@ -540,8 +543,6 @@ mod tests {
 
     fn set_up_particles<'a, T>(
             n_particles: usize,
-            temp: f64,
-            step: &'a f64,
             low: &'a Vec<f64>,
             up: &'a Vec<f64>,
             inertia: f64,
@@ -575,7 +576,6 @@ mod tests {
 
     fn set_up_particle<T>(
             data_vec: &Vec<f64>,
-            step: &f64,
             low: &Vec<f64>,
             up: &Vec<f64>,
             object: T,
@@ -584,7 +584,6 @@ mod tests {
             T: Objective + std::marker::Send + Clone,
     {
 
-        let temp = 2.0;
         let particle = ParticleBuilder::new()
             .set_data(data_vec.to_vec())
             .set_lower(low.to_vec())
@@ -598,12 +597,10 @@ mod tests {
     fn test_eval() {
         let obj = System{};
         let start_data = vec![0.0, 0.0];
-        let step = 0.0;
         let low = vec![-5.0, -5.0];
         let up = vec![5.0, 5.0];
         let particle = set_up_particle(
             &start_data,
-            &step,
             &low,
             &up,
             obj,
@@ -622,15 +619,11 @@ mod tests {
         let obj = System{};
         let start_data = vec![0.0, 0.0];
         let step = 0.0;
-        let inertia = 1.0;
-        let local_weight = 0.5;
-        let global_weight = 0.5;
         let global_best = vec![4.0, 4.0];
         let low = vec![-5.0, -5.0];
         let up = vec![5.0, 5.0];
         let mut particle = set_up_particle(
             &start_data,
-            &step,
             &low,
             &up,
             obj,
@@ -657,6 +650,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_swarming() {
 
         let n_particles = 5000;

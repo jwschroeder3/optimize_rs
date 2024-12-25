@@ -1,293 +1,183 @@
-use approx::assert_abs_diff_eq;
+use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
+use rand::prelude::*;
+use rand_distr::Normal;
+use rayon::prelude::*;
+use rand_xoshiro::Xoshiro256PlusPlus;
+use ordered_float::OrderedFloat;
 use crate::{
     Optimizer,
     Objective,
+    simulated_annealing::Particle,
+    simulated_annealing::ParticleBuilder,
 };
 
-impl<T> Optimizer<T> for ReplicaExchange {
-    fn step(&mut self) {}
+impl<T> Optimizer for ReplicaExchange<T>
+    where
+        T: Objective + Clone +std::marker::Send,
+{
+    fn optimize(&mut self, niter: usize) -> (Vec<f64>, f64) {
+        self.opt(niter)
+    }
 }
 
 pub struct ReplicaExchange<T> {
     particles: Vec<Particle<T>>,
     global_best_position: Vec<f64>,
     global_best_score: f64,
+    temperature_decay: f64,
+    swap_frequency: usize,
 }
 
-#[derive(Debug)]
-pub struct Particle<T> {
-    object: T,
-    position: Vec<f64>,
-    prior_position: Vec<f64>,
-    best_position: Vec<f64>,
-    best_score: f64,
-    score: f64,
-    lower_bound: Vec<f64>,
-    upper_bound: Vec<f64>,
-    temperature: f64,
-    stepsize: f64,
-    rng: Xoshiro256PlusPlus,
-}
-
-impl<T: Objective + std::marker::Send> Particle<T> {
+impl<T: Objective + Clone + std::marker::Send> ReplicaExchange<T> {
+    /// Returns particles whose positions are sampled from
+    /// a normal distribution defined by the original start position
+    /// plus 1.5 * stepsize.
     pub fn new(
-        data: Vec<f64>,
-        lower: Vec<f64>,
-        upper: Vec<f64>,
-        object: T,
-        temperature: f64,
-        stepsize: f64,
-    ) -> Particle<T>
+            n_particles: usize,
+            data: Vec<f64>,
+            lower: Vec<f64>,
+            upper: Vec<f64>,
+            temperature: f64,
+            temp_decay: f64,
+            stepsize: f64,
+            swap_freq: usize,
+            object: T,
+            accept_from_logit: bool,
+    ) -> ReplicaExchange<T>
         where
-            T: Objective + std::marker::Send,
+            T: Objective + Clone,
     {
+        // set variance of new particles around data to stepsize^2
+        let distr = Normal::new(0.0, stepsize).unwrap();
+        //let rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
+        let mut rng = Xoshiro256PlusPlus::from_entropy();
+        //let mut lrng = rng.lock().unwrap();
 
-        let mut init_rng = Xoshiro256PlusPlus::from_entropy();
-        // copy of data to place something into prior_position
-        let d = data.to_vec();
-        let pr = data.to_vec();
+        // instantiate a Vec
+        let mut particle_vec: Vec<Particle<T>> = Vec::new();
 
-        let rng = Xoshiro256PlusPlus::from_entropy();
-        let mut particle = Particle {
-            object: object,
-            position: data,
-            prior_position: d,
-            best_position: pr,
-            best_score: f64::INFINITY,
-            score: f64::INFINITY,
-            lower_bound: lower,
-            upper_bound: upper,
-            temperature: temperature,
-            stepsize: stepsize,
-            rng: rng,
-        };
-        particle.score = particle.evaluate();
-        particle.best_score = particle.score;
-        particle
-    }
+        // if doing ReplicaExchange, we'll need geomspace vec of temps
+        let t_start = temperature / 3.0;
+        let log_start = t_start.log10();
+        let t_end = temperature * 3.0;
+        let log_end = t_end.log10();
 
-    /// Gets the score for this Particle
-    fn evaluate(
-            &self,
-    ) -> f64 {
-        self.object.objective(&self.position)
-    }
-
-    /// Adjusts the position of the Particle
-    /// Note that all [Particle]s are instantiated with a velocity of zero.
-    /// Therefore, if your optimization algorith does not make use of velocity,
-    /// the velocity is never adjusted away from zero, so adding it here does
-    /// nothing. If your method *does* use velocity, then it will have adjusted
-    /// the velocity such that adding it here has an effect on its position.
-    /// Complementary to that, if you want only the velocity to affect particle
-    /// position, but no random jitter, set stepsize to 0.0.
-    /// Modifies self.position in place.
-    fn perturb(&mut self) {
-
-        // before we change the position, set prior position to current position
-        // this will enable reversion to prior state if we later reject the move
-        self.prior_position = self.position.to_vec();
-
-        // which index will we be nudging?
-        let idx = self.choose_param_index();
-        // by how far will we nudge?
-        let jitter = self.get_jitter();
-
-        // nudge the randomly chosen index by jitter
-        self.position[idx] += jitter;
-    }
-
-    /// Randomly chooses the index of position to update using jitter
-    fn choose_param_index(&mut self) -> usize {
-        let die = Uniform::new(0, self.position.len());
-        die.sample(&mut self.rng)
-    }
-
-    /// Sample once from a normal distribution with a mean of 0.0 and std dev
-    /// of self.stepsize.
-    fn get_jitter(&mut self) -> f64 {
-        /////////////////////////////////////////////////////
-        // I keep wanting to make thist distr a field of Particle, but shouldn't:
-        // I want to be able to update stepsize as optimization proceeds
-        /////////////////////////////////////////////////////
-        let jitter_distr = Normal::new(0.0, self.stepsize).unwrap();
-        jitter_distr.sample(&mut self.rng)
-    }
-
-    fn step(
-            &mut self,
-            global_best_position: &Vec<f64>,
-            t_adj: &f64,
-            accept_from_logit: &bool,
-    )
-        where
-            T: Objective + std::marker::Send,
-    {
-        // move the particle. 
-        self.perturb();
-        let score = self.evaluate(); //, rec_db, kmer, max_count, alpha);
-
-        if !self.accept(&score, accept_from_logit) {
-            self.revert();
-        } else {
-            // Update prior score [and possibly the best score] if we accepted
-            self.update_scores(&score);
+        let dt = (log_end - log_start) / ((n_particles - 1) as f64);
+        let mut temps = vec![log_start; n_particles];
+        for i in 1..n_particles {
+            temps[i] = temps[i - 1] + dt;
         }
-        self.adjust_temp(t_adj);
-    }
+        // get temps back from geom space
+        let temps: Vec<f64> = temps.iter()
+            .map(|x| x.exp())
+            .collect();
 
-    /// Update score fields after accepting a move
-    fn update_scores(&mut self, score: &f64) {
-        self.score = *score;
-        // if this was our best-ever score, update best_score and best_position
-        if *score < self.best_score {
-            self.best_score = *score;
-            self.best_position = self.position.to_vec();
-        }
-    }
-    
-    /// Revert current position and velocity to prior values
-    fn revert(&mut self) {
-        self.position = self.prior_position.to_vec();
-        self.velocity = self.prior_velocity.to_vec();
-    }
-    
-    /// Determine whether to accept the new position, or to go back to prior
-    /// position and try again. If score is greater that prior score,
-    /// return true. If the score is less than prior score, determine whether
-    /// to return true probabilistically using the following function:
-    ///
-    /// `exp(-(score - prior_score)/T)`
-    ///
-    /// where T is temperature.
-    fn accept(&mut self, score: &f64, accept_from_logit: &bool) -> bool {
-        if *accept_from_logit {
-            // clamp score to just barely above -1.0, up to just barely below 0.0
-            // this avoids runtime error in logit
-            let clamp_score = score.clamp(-(1.0-f64::EPSILON), -f64::EPSILON);
-            // take opposite of scores, since they're opposite of AMI
-            let diff = logit(&-clamp_score)
-                - logit(&-self.score.clamp(-(1.0-f64::EPSILON), -f64::EPSILON));
-            // testing if diff >= 0.0 here, and NOT <= 0.0, since we're doing
-            //   that thing of when we compare the logit of the opposite of
-            //   the scores. Therefore, a greater score than our previous
-            //   score is desireable.
-            if diff >= 0.0 {
-                true
-            // if score > last score, decide probabilistically whether to accept
+        // instantiate particles around the actual data
+        for i in 0..n_particles {
+            //
+            let obj_i = object.clone();
+            // instantiate the random number generator
+            let mut data_vec = data.to_vec();
+            // first particle should be right on data
+            let temp = temps[i];
+            if i == 0 {
+                // if this is the first particle, place it directly at data_vec
+                let particle = Particle::new(
+                    data_vec,
+                    lower.to_vec(),
+                    upper.to_vec(),
+                    obj_i,
+                    temp,
+                    stepsize,
+                    accept_from_logit,
+                );
+                particle_vec.push(particle);
             } else {
-                // this is the function used by scipy.optimize.basinhopping for P(accept)
-                // the only difference here is that, again, because we're really maximizing
-                // a score, we just use diff, and not -diff.
-                let accept_prob = (diff/self.temperature).exp();
-                if accept_prob > self.rng.gen() {
-                    true
-                }
-                else {
-                    false
-                }
+                let mut rng = Xoshiro256PlusPlus::from_entropy();
+                data_vec.iter_mut()
+                    .enumerate()
+                    .for_each(|(i,a)| {
+                        // set new particle's data to data + sample, clamp between bounds
+                        *a = *a + distr
+                            .sample(&mut rng)
+                            .clamp(lower[i],upper[i]);
+                    });
+                let particle = Particle::new(
+                    data_vec,
+                    lower.to_vec(),
+                    upper.to_vec(),
+                    obj_i,
+                    temp,
+                    stepsize,
+                    accept_from_logit,
+                );
+                particle_vec.push(particle);
             }
-        } else {
-            // compare this score to prior score
-            let diff = score - self.score;
-            if diff <= 0.0 {
-                true
-            } else {
-                // this is the function used by scipy.optimize.basinhopping for P(accept)
-                let accept_prob = (-diff/self.temperature).exp();
-                if accept_prob > self.rng.gen() {
-                    true
-                }
-                else {
-                    false
-                }
-            }
+        }
+        // sort in ascending order of score
+        particle_vec.sort_unstable_by_key(|a| {
+            OrderedFloat(a.score)
+        });
+        // lowest score is best, so take first one's position and score
+        let best_pos = particle_vec[0].best_position.to_vec();
+        let best_score = particle_vec[0].best_score;
+        // sort in ascending order of temperature
+        particle_vec.sort_unstable_by_key(|a| {
+            OrderedFloat(a.temperature)
+        });
 
+        ReplicaExchange {
+            particles: particle_vec,
+            global_best_position: best_pos,
+            global_best_score: best_score,
+            temperature_decay: temp_decay,
+            swap_frequency: swap_freq,
         }
     }
 
-    /// Adjusts the temperature of the Particle
-    ///
-    /// Defined as
-    ///
-    /// ` T_{i+1} = T_i * (1.0 - t_{adj})`
-    ///
-    /// # Arguments
-    ///
-    /// * `t_adj` - fractional amount by which to decrease the temperature of
-    ///    the particle. For instance, if current temp is 1.0 and t_adj is 0.2,
-    ///    the new temperature will be 1.0 * (1.0 - 0.2) = 0.8
-    fn adjust_temp(&mut self, t_adj: &f64) {
-        self.temperature *= 1.0 - t_adj
+    fn par_iter_mut(&mut self) -> rayon::slice::IterMut<Particle<T>> {
+        self.particles.par_iter_mut()
     }
 
-    /// Adjusts that stepsize of the Particle
-    ///
-    /// Definaed as
-    ///
-    /// ` S_{i+1} = S_i * (1.0 - s_{adj})`
-    ///
-    /// # Arguments
-    ///
-    /// * `s_adj` - fractional amount by which to decrease the stepsize of the
-    ///     particle.
-    fn adjust_stepsize(&mut self, s_adj: &f64) {
-        self.stepsize *= 1.0 - s_adj
+    fn step(&mut self) {
+        let t_adj = self.temperature_decay;
+        self.par_iter_mut().for_each(|x| {
+            x.step(&t_adj);
+        });
+        self.particles.sort_unstable_by_key(|particle| OrderedFloat(particle.score));
+        self.global_best_position = self.particles[0].best_position.to_vec();
+        self.global_best_score = self.particles[0].best_score;
     }
-}
 
-pub fn replica_exchange<T>(
-        params: Vec<f64>,
-        lower: Vec<f64>,
-        upper: Vec<f64>,
-        n_particles: usize,
-        temp: f64,
-        step: f64,
-        initial_jitter: f64,
-        niter: usize,
-        t_adj: &f64,
-        swap_freq: &usize,
-        object: T,
-        accept_from_logit: &bool,
-) -> (Vec<f64>, f64)
-    where
-        T: Objective + Clone + std::marker::Send,
-{
-
-    // set inertia, local_weight, and global_weight to 0.0 to turn off velocities,
-    // thus leaving only the jitter to affect particle position
-    let inertia = 0.0;
-    let local_weight = 0.0;
-    let global_weight = 0.0;
-
-    let mut particles = Particles::new(
-        n_particles,
-        params,
-        lower,
-        upper,
-        temp,
-        step,
-        initial_jitter,
-        object,
-        &Method::ReplicaExchange,
-    );
-
-    for i in 0..niter {
-        if i % swap_freq == 0 {
-            particles.exchange(true);
+    fn exchange(&mut self) {
+        let mut iterator = Vec::new();
+        let swap_num = self.len() / 2;
+        for i in 0..swap_num {
+            iterator.push((i*2,i*2+1));
         }
-        particles.step(
-            &inertia,
-            &0.0,
-            &0.0,
-            &0.0,
-            &local_weight,
-            &global_weight,
-            &t_adj,
-            accept_from_logit,
+        self.particles.sort_unstable_by_key(
+            |particle| OrderedFloat(particle.temperature)
         );
+        for swap_idxs in iterator {
+            let temp_i = self.particles[swap_idxs.1].temperature;
+            let temp_i_plus_one = self.particles[swap_idxs.0].temperature;
+            self.particles[swap_idxs.0].temperature = temp_i;
+            self.particles[swap_idxs.1].temperature = temp_i_plus_one;
+        }
     }
-    (particles.global_best_position.to_vec(), particles.global_best_score)
+
+    /// Returns the number of particles in the Particles
+    pub fn len(&self) -> usize {self.particles.len()}
+
+    pub fn opt(&mut self, niter: usize) -> (Vec<f64>, f64) {
+        for i in 0..niter {
+            if i % self.swap_frequency == 0 {
+                self.exchange();
+            }
+            self.step();
+        }
+        (self.global_best_position.to_vec(), self.global_best_score)
+    }
 }
 
 #[cfg(test)]
@@ -348,24 +238,26 @@ mod tests {
             up: &'a Vec<f64>,
             init_jitter: f64,
             object: T,
-            method: &Method,
-    ) -> Particles<T>
+    ) -> ReplicaExchange<T>
         where
             T: Objective + Clone + std::marker::Send,
     {
 
         let data_vec = vec![0.0, 0.0, 0.0, 0.0, 0.0];
+        let swap_freq = 2;
+        let t_decay = 0.01;
 
-        Particles::new(
+        ReplicaExchange::new(
             n_particles,
             data_vec,
             low.to_vec(),
             up.to_vec(),
             temp,
+            t_decay,
             *step,
-            init_jitter,
+            swap_freq,
             object,
-            method,
+            false,
         )
     }
 
@@ -375,7 +267,6 @@ mod tests {
             low: &Vec<f64>,
             up: &Vec<f64>,
             object: T,
-            method: &Method
     ) -> Particle<T>
         where
             T: Objective + std::marker::Send + Clone,
@@ -383,13 +274,12 @@ mod tests {
 
         let temp = 2.0;
         let particle = ParticleBuilder::new()
-            .set_data(data_vec.to_vec()).unwrap()
-            .set_lower(low.to_vec()).unwrap()
-            .set_upper(up.to_vec()).unwrap()
+            .set_data(data_vec.to_vec())
+            .set_lower(low.to_vec())
+            .set_upper(up.to_vec())
             .set_objective(object)
-            .set_temperature(temp).unwrap()
-            .set_stepsize(*step).unwrap()
-            .set_method(*method)
+            .set_temperature(temp)
+            .set_stepsize(*step)
             .build().unwrap();
         particle
     }
@@ -407,7 +297,6 @@ mod tests {
             &low,
             &up,
             obj,
-            &Method::SimulatedAnnealing,
         );
         let score = particle.evaluate();
         // for himmelblau
@@ -430,7 +319,6 @@ mod tests {
             &low,
             &up,
             obj,
-            &Method::SimulatedAnnealing,
         );
 
         //let mut rng = Arc::new(Mutex::new(Xoshiro256PlusPlus::from_entropy()));
@@ -452,7 +340,6 @@ mod tests {
             &low,
             &up,
             obj,
-            &Method::SimulatedAnnealing,
         );
         particle.perturb();
         // particle should end NOT at [1.0,1.0], so the sums should differ
@@ -462,224 +349,82 @@ mod tests {
         );
     }
 
-    //#[test]
-    //fn test_velocity_only() {
-    //    // Here we test that stepsize 0.0 and velocity [1.0, 1.0] moves particle
-    //    // directionally
-    //    let obj = System{};
-    //    let start_data = vec![0.0, 0.0];
-    //    let step = 0.0;
-    //    let inertia = 1.0;
-    //    let local_weight = 0.5;
-    //    let global_weight = 0.5;
-    //    let global_best = vec![4.0, 4.0];
-    //    let low = vec![-5.0, -5.0];
-    //    let up = vec![5.0, 5.0];
-    //    let method = Method::ParticleSwarm;
-    //    let mut particle = set_up_particle(
-    //        &start_data,
-    //        &step,
-    //        &low,
-    //        &up,
-    //        obj,
-    //        //&himmelblau,
-    //        &method,
-    //    );
-    //    // particle velocity is initialized randomly
-    //    let initial_velocity = particle.velocity.to_vec();
-    //    //assert!(particle.velocity.abs_diff_eq(&array![0.0, 0.0], 1e-6));
-    //    particle.set_velocity(
-    //        &inertia,
-    //        &local_weight,
-    //        &global_weight,
-    //        &global_best,
-    //        &method,
-    //    );
-    //    // particle velocity should have changed
-    //    particle.velocity.iter()
-    //        .zip(&initial_velocity)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
-    //    // move the particle
-    //    println!("Position prior to move: {:?}", &particle.position);
-    //    particle.perturb(&method);
-    //    // particle should have moved in direction of velocity, but magnitude will
-    //    //  be random
-    //    particle.position.iter()
-    //        .zip(&start_data)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(a,b));
-    //    println!("Position after: {:?}", &particle.position);
-    //}
+    #[test]
+    fn test_temp_swap() {
 
-    //#[test]
-    //fn test_temp_swap() {
-    //    let mut particles = set_up_particles(
-    //        6,
-    //        1.0,
-    //        &0.25,
-    //        &vec![-0.5, -0.5, -0.5, -0.5, -0.5],
-    //        &vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-    //        0.5,
-    //        System{},
-    //        &Method::ReplicaExchange,
-    //    );
-    //    for i in 0..6 {
-    //        println!("{:?}", particles.particles[i].temperature);
-    //    }
-    //    particles.exchange(false);
-    //    println!("");
-    //    for i in 0..6 {
-    //        println!("{:?}", particles.particles[i].temperature);
-    //    }
-    //}
+        let mut particles = set_up_particles(
+            6,
+            1.0,
+            &0.25,
+            &vec![-0.5, -0.5, -0.5, -0.5, -0.5],
+            &vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+            0.5,
+            System{},
+        );
+        let target_temps = vec![
+            0.6205672780199154,
+            0.7510577348831783,
+            0.9089872139693249,
+            1.1001254854105642,
+            1.3314555640060655,
+            1.6114288255590359,
+        ];
+        for i in 0..6 {
+            assert_eq!(particles.particles[i].temperature, target_temps[i]);
+        };
+        println!("{:?}", particles.particles.iter().map(|x| x.temperature).collect::<Vec<f64>>());
+        println!("Scores: {:?}", particles.particles.iter().map(|x| x.score).collect::<Vec<f64>>());
 
-    //#[test]
-    //fn test_replica_exchange() {
-    //    let obj = System{};
-    //    let step = 0.2;
-    //    let start = vec![0.0, 0.0];
-    //    let low = vec![-5.0, -5.0];
-    //    let up = vec![5.0, 5.0];
-    //    let temp = 10.0;
-    //    let niter = 20000;
-    //    let t_adj = 0.0001;
-    //    let initial_jitter = &step * 8.0;
-    //    let swap_freq = 5;
-    //    let n_particles = 50;
+        particles.exchange();
+        let swap_target_temps = vec![
+            0.7510577348831783,
+            0.6205672780199154,
+            1.1001254854105642,
+            0.9089872139693249,
+            1.6114288255590359,
+            1.3314555640060655,
+        ];
+        for i in 0..6 {
+            assert_eq!(particles.particles[i].temperature, swap_target_temps[i]);
+        }
+    }
 
-    //    let opt_params = replica_exchange(
-    //        start.clone(),
-    //        low,
-    //        up,
-    //        n_particles,
-    //        temp,
-    //        step,
-    //        initial_jitter,
-    //        niter,
-    //        &t_adj,
-    //        &swap_freq,
-    //        obj,
-    //        &false,
-    //    );
+    #[test]
+    fn test_replica_exchange() {
+        let obj = System{};
+        let step = 0.2;
+        let start = vec![0.0, 0.0];
+        let low = vec![-5.0, -5.0];
+        let up = vec![5.0, 5.0];
+        let temp = 10.0;
+        let niter = 20000;
+        let t_decay = 0.0001;
+        let swap_freq = 2;
+        let n_particles = 100;
 
-    //    let target = vec![1.0,1.0];
+        let mut optimizer = ReplicaExchange::new(
+            n_particles,
+            start.clone(),
+            low.to_vec(),
+            up.to_vec(),
+            temp,
+            t_decay,
+            step,
+            swap_freq,
+            obj,
+            false,
+        );
+        let opt_params = optimizer.optimize(niter);
 
-    //    opt_params.0.iter()
-    //        .zip(&start)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-    //    opt_params.0.iter()
-    //        .zip(target)
-    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
-    //    println!("Replica exchange result: {:?}", opt_params);
-    //}
+        let target = vec![1.0,1.0];
 
-    //#[test]
-    //fn test_annealing() {
-    //    let obj = System{};
-    //    let step = 0.2;
-    //    let start = vec![0.0, 0.0];
-    //    let low = vec![-5.0, -5.0];
-    //    let up = vec![5.0, 5.0];
-    //    let temp = 10.0;
-    //    let niter = 20000;
-    //    let t_adj = 0.0001;
-
-    //    let opt_params = simulated_annealing(
-    //        start.clone(),
-    //        low,
-    //        up,
-    //        temp,
-    //        step,
-    //        niter,
-    //        &t_adj,
-    //        obj,
-    //        //rosenbrock,
-    //        &false,
-    //    );
-
-    //    let target = vec![1.0,1.0];
-
-    //    opt_params.0.iter()
-    //        .zip(&start)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-    //    opt_params.0.iter()
-    //        .zip(target)
-    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
-    //    println!("Annealing result: {:?}", opt_params);
-    //}
-
-    //#[test]
-    //fn test_swarming() {
-
-    //    let obj = System{};
-    //    let step = 0.25;
-    //    let start = vec![0.0, 0.0];
-    //    let low = vec![-5.0, -5.0];
-    //    let up = vec![5.0, 5.0];
-    //    let n_particles = 50;
-    //    let inertia = 0.8;
-    //    let local_weight = 0.2;
-    //    let global_weight = 0.8;
-    //    let initial_jitter = &step * 8.0;
-
-    //    let niter = 1000;
-
-    //    let opt_params = particle_swarm(
-    //        start.clone(),
-    //        low,
-    //        up,
-    //        n_particles,
-    //        inertia,
-    //        local_weight,
-    //        global_weight,
-    //        initial_jitter,
-    //        niter,
-    //        obj,
-    //        &false,
-    //    );
-
-    //    let target = vec![1.0,1.0];
-
-    //    opt_params.0.iter()
-    //        .zip(&start)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-    //    opt_params.0.iter()
-    //        .zip(target)
-    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
-
-    //    println!("Swarm result: {:?}", opt_params);
-    //}
-
-    //#[test]
-    //fn test_pidao() {
-
-    //    let obj = System{};
-    //    let step = 0.25;
-    //    let start = vec![0.0, 0.0];
-    //    let low = vec![-5.0, -5.0];
-    //    let up = vec![5.0, 5.0];
-
-    //    let niter = 1000;
-
-    //    let opt_params = pidao(
-    //        start.clone(),
-    //        low,
-    //        up,
-    //        step,
-    //        niter,
-    //        obj,
-    //        &false,
-    //    );
-
-    //    let target = vec![1.0,1.0];
-
-    //    opt_params.0.iter()
-    //        .zip(&start)
-    //        .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
-    //    opt_params.0.iter()
-    //        .zip(target)
-    //        .for_each(|(a,b)| assert_abs_diff_eq!(*a,b));
-
-    //    println!("PIDAO result: {:?}", opt_params);
-    //}
+        opt_params.0.iter()
+            .zip(&start)
+            .for_each(|(a,b)| assert_abs_diff_ne!(*a,b));
+        opt_params.0.iter()
+            .zip(target)
+            .for_each(|(a,b)| assert_abs_diff_eq!(*a,b,epsilon=0.03));
+        println!("Replica exchange result: {:?}", opt_params);
+    }
 
 }

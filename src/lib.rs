@@ -1,14 +1,9 @@
-use rand::prelude::*;
 use std::fmt::Debug;
-use rand_distr::{Normal, Uniform};
-use rand_xoshiro::Xoshiro256PlusPlus;
-use ordered_float::OrderedFloat;
 use std::any::type_name;
-use approx::{assert_abs_diff_eq,assert_abs_diff_ne};
 
-//pub mod simulated_annealing;
+pub mod simulated_annealing;
 pub mod particle_swarm;
-//pub mod replica_exchange;
+pub mod replica_exchange;
 //pub mod pidao;
 //pub mod bayes_opt;
 
@@ -1102,9 +1097,9 @@ pub trait Objective {
 ///////////////////////////////////////////////////
 // I may use this in acceptance criterion /////////
 ///////////////////////////////////////////////////
-//pub fn logit(p: &f64) -> f64 {
-//    (p / (1.0-p)).ln()
-//}
+pub fn logit(p: &f64) -> f64 {
+    (p / (1.0-p)).ln()
+}
 
 //pub fn optimize<T>(
 //) -> (Vec<f64>, f64)
